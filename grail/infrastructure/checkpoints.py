@@ -506,7 +506,12 @@ class CheckpointManager:
 def default_checkpoint_cache_root() -> Path:
     """Return default cache directory for checkpoints."""
 
-    base_dir = Path(os.getenv("GRAIL_CACHE_DIR", Path.home() / ".cache/grail"))
+    env_path = os.getenv("GRAIL_CACHE_DIR")
+    if env_path:
+        # Expand tilde if present in environment variable
+        base_dir = Path(env_path).expanduser()
+    else:
+        base_dir = Path.home() / ".cache/grail"
     return base_dir / "checkpoints"
 
 

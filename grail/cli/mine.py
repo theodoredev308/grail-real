@@ -428,7 +428,13 @@ def package_rollout_data(
     Returns:
         Signed dictionary ready to upload for validation
     """
-    rollout_nonce = base_nonce * 10 + rollout_idx
+    # Nonce must be unique per rollout within a window. The older scheme
+    # used (base_nonce * 10 + rollout_idx), which collides once
+    # ROLLOUTS_PER_PROBLEM > 10 (e.g., 16), causing the uploader to drop
+    # all rollouts after the first duplicate. Instead, space nonces by
+    # ROLLOUTS_PER_PROBLEM so each (base_nonce, rollout_idx) pair is
+    # globally unique within the file.
+    rollout_nonce = base_nonce * ROLLOUTS_PER_PROBLEM + rollout_idx
 
     # Sign commit binding (tokens, randomness, model, layer, commitments)
     from ..protocol.signatures import sign_commit_binding
@@ -571,7 +577,7 @@ async def generate_rollouts_for_window(
 
     device = model.device
     # Batch size for parallel rollout generation (tune per node for memory/throughput)
-    batch_size = int(os.getenv("GRAIL_GENERATION_BATCH_SIZE", "2"))
+    batch_size = int(os.getenv("GRAIL_GENERATION_BATCH_SIZE", "16"))
     if batch_size > ROLLOUTS_PER_PROBLEM:
         logger.warning(
             "GRAIL_GENERATION_BATCH_SIZE=%d exceeds ROLLOUTS_PER_PROBLEM=%d; capping at %d",

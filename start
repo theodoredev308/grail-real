@@ -1,0 +1,121 @@
+apt update && apt upgrade -y && apt install nano unzip numactl
+
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env
+
+
+# Clone and enter
+git clone https://github.com/one-covenant/grail
+cd grail
+uv sync
+source .venv/bin/activate
+
+apt install sudo -y
+sudo apt install  npm -y
+sudo npm install pm2@5.1.2 -g
+mkdir -p /root/.bittensor/wallets
+export CHAINENDPOINT=ws://84.32.70.36:9944
+export WANDB_MODE=offline
+wandb disabled
+
+find . | grep -E "(/__pycache__$|\.pyc$|\.pyo$)" | xargs rm -rf
+
+redis-cli -p 25836 FLUSHALL
+rm -rf ~/.cache
+
+hf auth login --token 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
+find . | grep -E "(/__pycache__$|\.pyc$|\.pyo$)" | xargs rm -rf
+
+
+
+
+
+
+# python3 -c "from datasets import load_dataset; load_dataset('openai/gsm8k', 'main', split='train'); load_dataset('openai/gsm8k', 'main', split='test'); print('GSM8K dataset downloaded to HuggingFace cache')"
+python3 -c "from datasets import load_dataset; load_dataset('nlile/hendrycks-MATH-benchmark', split='train'); load_dataset('nlile/hendrycks-MATH-benchmark', split='test'); print('MATH dataset downloaded to HuggingFace cache')"
+
+
+
+
+
+export NETUID=81
+export USE_TRAINER_BUCKET=1
+export BT_WALLET_COLD=ein
+export BT_WALLET_HOT=ein41
+export GRAIL_WAIT_FOR_DL_MANAGER=1
+export HF_DATASETS_CACHE="/root/.cache/huggingface/datasets"
+export HF_HOME="/root/.cache/huggingface"
+export HF_DATASETS_OFFLINE=1
+export REDIS_URL=redis://127.0.0.1:25836
+export GRAIL_GENERATION_BATCH_SIZE=16
+
+pm2 start --name miner python -- miner.py
+
+pm2 start --name dl-manager python -- scripts/download_manager.py
+
+pm2 start --name workerhf:cuda0 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:0
+pm2 start --name workerhf:cuda1 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:1
+pm2 start --name workerhf:cuda2 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:2
+pm2 start --name workerhf:cuda3 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:3
+pm2 start --name workerhf:cuda4 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:4
+pm2 start --name workerhf:cuda5 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:5
+pm2 start --name workerhf:cuda6 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:6
+pm2 start --name workerhf:cuda7 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:7
+
+
+redis-cli -p 25836 FLUSHALL
+
+
+export REDIS_URL=redis://
+pm2 start --name workerhf:cuda0 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:0
+pm2 start --name workerhf:cuda1 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:1
+pm2 start --name workerhf:cuda2 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:2
+pm2 start --name workerhf:cuda3 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:3
+pm2 start --name workerhf:cuda4 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:4
+pm2 start --name workerhf:cuda5 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:5
+pm2 start --name workerhf:cuda6 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:6
+pm2 start --name workerhf:cuda7 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:7
+
+pm2 start --name dl-manager python -- scripts/download_manager.py
+
+
+
+
+
+
+nohup redis-server /root/grail/redis.conf > /root/grail/redis.out 2>&1 &
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+pm2 start --name miner python -- miner.py
+
+pm2 start --name dl-manager python -- scripts/download_manager.py
+
+pm2 start --name workerhf:cuda0 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:0
+pm2 start --name workerhf:cuda1 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:1
+pm2 start --name workerhf:cuda2 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:2
+pm2 start --name workerhf:cuda3 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:3
+pm2 start --name workerhf:cuda4 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:4
+pm2 start --name workerhf:cuda5 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:5
+pm2 start --name workerhf:cuda6 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:6
+pm2 start --name workerhf:cuda7 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:7
+

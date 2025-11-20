@@ -108,11 +108,13 @@ def get_model(
             )
 
     # Load model with optimized attention if available
+    # Use bfloat16 for any CUDA device (cuda, cuda:0, cuda:1, etc.), bfloat16 for CPU
+    use_bfloat16 = device.startswith("cuda") if isinstance(device, str) else False
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         use_safetensors=use_safetensors,
         attn_implementation=attn_implementation,
-        torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+        torch_dtype=torch.bfloat16 if use_bfloat16 else torch.bfloat16,
     )
 
     # Preserve original model name for GRAIL proof validation

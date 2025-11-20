@@ -27,7 +27,7 @@ except Exception:  # pragma: no cover - optional in offline mode
 import numpy as np
 import torch
 
-from ..shared.constants import GRAIL_PROOF_VERSION, LAYER_INDEX, MAX_NEW_TOKENS
+from ..shared.constants import CHALLENGE_K, GRAIL_PROOF_VERSION, LAYER_INDEX, MAX_NEW_TOKENS
 from ..shared.hf_compat import resolve_hidden_size
 from .core import ChatMessage, MultiTurnEnv
 
@@ -126,6 +126,10 @@ class GenerationParams:
     """
 
     max_new_tokens: int = MAX_NEW_TOKENS
+    # Enforce a minimum completion length to avoid validator "completion too short"
+    # failures. When used with HF generate(), this guarantees at least this many
+    # tokens are generated past the prompt (subject to max_new_tokens).
+    min_new_tokens: int | None = CHALLENGE_K
     temperature: float = 0.7
     do_sample: bool = True
     top_p: float = 0.95
@@ -226,6 +230,10 @@ class HFBackend:
             "pad_token_id": pad_id,
             "eos_token_id": eos_id,
         }
+        # Enforce minimum completion length when configured to avoid too-short
+        # completions that would fail validator checks (completion_len < CHALLENGE_K).
+        if params.min_new_tokens is not None:
+            gen_kwargs["min_new_tokens"] = int(params.min_new_tokens)
         if params.top_k is not None:
             gen_kwargs["top_k"] = int(params.top_k)
         if params.repetition_penalty is not None:

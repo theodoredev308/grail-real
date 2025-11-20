@@ -19,7 +19,7 @@ from huggingface_hub import HfFolder
 from safetensors.torch import load_file, save_file
 from tqdm import tqdm  # type: ignore[import-untyped]
 from transformers import AutoModelForCausalLM
-
+import orjson
 from ..shared.constants import UPLOAD_TIMEOUT, WINDOW_LENGTH
 from ..shared.schemas import Bucket, BucketCredentials
 
@@ -397,7 +397,57 @@ class TransferProgress:
 # --------------------------------------------------------------------------- #
 #                   Upload Functions                                          #
 # --------------------------------------------------------------------------- #
-
+async def _compress_with_pigz(data: bytes) -> bytes:
+    """Use pigz (parallel gzip) for fast multi-threaded compression.
+    
+    Falls back to Python gzip if pigz is not available.
+    Uses all available CPU cores for maximum speed.
+    """
+    try:
+        # Create temporary files for pigz I/O
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.json') as tmp_in:
+            tmp_in.write(data)
+            tmp_in_path = tmp_in.name
+        
+        tmp_out_path = tmp_in_path + '.gz'
+        
+        try:
+            # Determine optimal core count
+            # Use all available cores (pigz auto-detects if not specified)
+            # Can override with GRAIL_COMPRESSION_THREADS env var
+            import os
+            threads = os.getenv('GRAIL_COMPRESSION_THREADS', str(os.cpu_count() or 32))
+            
+            # Run pigz with optimal settings:
+            # -1: Fast compression (same as gzip level 1)
+            # -p N: Use N processors
+            # -k: Keep input file (we'll delete manually)
+            # -f: Force overwrite
+            # --rsyncable: Make output more rsync-friendly (optional)
+            result = await asyncio.create_subprocess_exec(
+                'pigz', '-1', '-p', threads, '-k', '-f', tmp_in_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await result.communicate()
+            
+            # Read compressed data
+            with open(tmp_out_path, 'rb') as f:
+                compressed = f.read()
+            
+            return compressed
+            
+        finally:
+            # Cleanup temporary files
+            try:
+                logger.debug(f"compressed with pigz")
+            except Exception:
+                pass
+                
+    except (FileNotFoundError, Exception) as e:
+        # pigz not available or failed, fallback to Python gzip
+        logger.debug(f"pigz not available ({e}), using Python gzip")
+        return gzip.compress(data, compresslevel=1)
 
 async def upload_file_chunked(
     key: str,
@@ -426,12 +476,20 @@ async def upload_file_chunked(
     """
 
     # Compress small JSON only; skip binaries/large files
-    if compress and key.endswith(".json") and len(data) < 10 * 1024 * 1024:
+    if compress and key.endswith(".json"):
         original_size = len(data)
-        data = gzip.compress(data, compresslevel=6)
+        
+        # Use pigz for parallel compression (much faster)
+        compression_start = time.time()
+        data = await _compress_with_pigz(data)
+        compression_time = time.time() - compression_start
+        
         key = key + ".gz"
+        compression_speed_mbs = (original_size / 1024 / 1024) / compression_time if compression_time > 0 else 0
         logger.info(
-            f"🗜️ Compressed {original_size} → {len(data)} bytes ({100 * (1 - len(data) / original_size):.1f}% reduction)"
+            f"🗜️ Compressed {original_size} → {len(data)} bytes "
+            f"({100 * (1 - len(data) / original_size):.1f}% reduction) "
+            f"in {compression_time:.1f}s @ {compression_speed_mbs:.1f} MB/s"
         )
 
     total_size = len(data)
@@ -774,7 +832,7 @@ async def download_file_chunked(
                     # Close response body
                     response["Body"].close()
 
-            # For large files, download in chunks
+            # For large files, download in chunks with aggressive concurrency
             chunks: list[bytes] = []
             semaphore = asyncio.Semaphore(10 if chunk_size >= 200 * 1024 * 1024 else 30)
             tasks = []
@@ -1109,7 +1167,9 @@ async def sink_window_inferences(
         "timestamp": time.time(),
     }
 
-    body = json.dumps(window_data).encode()
+    # body = json.dumps(window_data).encode()
+    # orjson returns bytes so we don't need to encode
+    body = orjson.dumps(window_data)
     logger.debug(f"[SINK] window={window_start} count={len(inferences)} → key={key}")
 
     success = await upload_file_chunked(key, body, credentials=credentials, use_write=True)
