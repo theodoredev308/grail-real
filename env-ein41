@@ -1,0 +1,244 @@
+# ============================================================================
+# NETWORK SELECTION (used by code in grail/shared/constants.py and network helper)
+# ============================================================================
+# Which Bittensor network to connect to:
+# - finney : mainnet
+# - test   : public testnet
+# - custom : use BT_CHAIN_ENDPOINT below
+BT_NETWORK=custom
+
+# Optional explicit websocket endpoint (use for private/custom nodes)
+# Example: wss://test.finney.opentensor.ai:443
+BT_CHAIN_ENDPOINT=ws://5.161.231.4:9944
+
+# Your target subnet NETUID (e.g., 81 mainnet, 429 your test subnet)
+NETUID=81
+
+# ============================================================================
+# WALLET CONFIGURATION
+# ============================================================================
+# These are *names* (aliases) you assign when creating the coldkey and hotkey.
+# You can create a new one for mining/validating like `btcli wallet new_coldkey --wallet.name mywallet`
+# Not the SS58 address or file path. Just the user-chosen wallet name.
+# 1. BT_WALLET_COLD — the name you gave your coldkey (e.g., "mywallet")
+# This key stays offline and is used for staking, registration, and ownership.
+BT_WALLET_COLD=ein
+
+# 2. BT_WALLET_HOT — the name you gave your hotkey (e.g., "myhotkey")
+# You can create a new one `btcli wallet new_hotkey --wallet.name mywallet --wallet.hotkey myhotkey`
+# Note that mywallet here is the same from the previous set.
+# This key is safe to use online and used for mining, validation, or inference.
+BT_WALLET_HOT=ein41
+# ============================================================================
+# OPTIONAL: STORAGE (Cloudflare R2) - DUAL CREDENTIAL SYSTEM
+# ============================================================================
+# IMPORTANT: GRAIL uses a dual-credential system for R2:
+# - WRITE credentials: Private, never shared, used for uploading your data
+# - READ credentials: Shared on-chain, allows others to read your data
+
+# 1. R2_BUCKET_ID: The name of the R2 bucket you create
+# ➤ Go to https://dash.cloudflare.com > R2 > "Create Bucket"
+# ➤ Choose a unique bucket name (e.g., `validator-artifacts`) — this is your BUCKET_ID.
+R2_BUCKET_ID="62c9a78286c93043580fecdc004ed646"
+
+# 2. R2_ACCOUNT_ID: Your Cloudflare account ID (used in API endpoints)
+# ➤ Go to: https://dash.cloudflare.com > Click your account (top left) > Overview
+# ➤ Copy the "Account ID" shown there.
+R2_ACCOUNT_ID=62c9a78286c93043580fecdc004ed646
+
+# 3. WRITE CREDENTIALS (Private - NEVER shared on chain)
+# These are your API credentials with full read/write access to R2
+# ➤ Go to: https://dash.cloudflare.com > R2 > "Manage R2 API Tokens"
+# ➤ Click "Create API Token"
+# ➤ Name it something like "grail-write-access"
+# ➤ Select **Edit Permissions**, and:
+#   - Scope: `Account.Cloudflare R2 Storage` (or select R2 bucket explicitly)
+#   - Permissions: `Edit` (for full read/write access)
+# ➤ Generate and copy both keys.
+R2_WRITE_ACCESS_KEY_ID=15b9d6b3ab0e8f2d7f66c4c7ca118f2a
+R2_WRITE_SECRET_ACCESS_KEY=0ba28bfafebccd9cc450b24376a97008f521c02bad4f95fe20d148ff151f0f22
+
+# 4. READ CREDENTIALS (Public - Will be posted to chain)
+# These are API credentials with read-only access to R2
+# ➤ Go to: https://dash.cloudflare.com > R2 > "Manage R2 API Tokens"
+# ➤ Click "Create API Token" again
+# ➤ Name it something like "grail-read-only"
+# ➤ Select **Read Permissions**, and:
+#   - Scope: `Account.Cloudflare R2 Storage` (or select R2 bucket explicitly)
+#   - Permissions: `Read` (for read-only access)
+# ➤ Generate and copy both keys.
+# NOTE: These credentials will be committed to the blockchain for transparency
+R2_READ_ACCESS_KEY_ID=c761f12da1f91687a3f76efbd968481c
+R2_READ_SECRET_ACCESS_KEY=68a4cc3525a63bb8a2441c4f4617e1d46f684104ca4db79a4bb0dccaf6b53336
+
+# ============================================================================
+# GRAIL TRAINER MODEL LOADING CONFIGURATION
+# ============================================================================
+# The trainer supports flexible model loading at startup via environment variables.
+# Both training and reference models can be loaded from different sources:
+# - "latest": Download and use the latest checkpoint from R2 bucket
+# - "hf": Load a model directly from Hugging Face Hub
+# - "window": Load a specific checkpoint from a particular window
+
+# Training Model Configuration
+# Mode for loading the training model (required, no default)
+# Options: latest | hf | window
+GRAIL_TRAIN_MODEL_MODE=latest
+
+# Required if GRAIL_TRAIN_MODEL_MODE=hf
+# HuggingFace model ID (e.g., "Qwen/Qwen2.5-7B")
+GRAIL_TRAIN_MODEL_ID=
+
+# Required if GRAIL_TRAIN_MODEL_MODE=window
+# Specific window number to load checkpoint from (e.g., 72000)
+GRAIL_TRAIN_CHECKPOINT_WINDOW=
+
+# Reference Model Configuration
+# Mode for loading the reference model (required, no default)
+# Options: latest | hf | window
+GRAIL_REF_MODEL_MODE=latest
+
+# Required if GRAIL_REF_MODEL_MODE=hf
+# HuggingFace model ID (e.g., "Qwen/Qwen2.5-7B")
+GRAIL_REF_MODEL_ID=
+
+# Required if GRAIL_REF_MODEL_MODE=window
+# Specific window number to load checkpoint from (e.g., 72000)
+GRAIL_REF_CHECKPOINT_WINDOW=
+
+
+# ============================================================================
+# MONITORING SYSTEM CONFIGURATION
+# ============================================================================
+# Backend type for monitoring ("wandb" for WandB, "null" to disable)
+GRAIL_MONITORING_BACKEND=wandb
+
+# ============================================================================
+# WANDB (WEIGHTS & BIASES) CONFIGURATION
+# ============================================================================
+# WandB API key (create at https://wandb.ai/settings)
+# Required for WANDB_MODE="online"
+WANDB_API_KEY=
+# WandB project name (creates a project in your WandB workspace)
+WANDB_PROJECT=grail
+
+# WandB entity/team name (your username or team name, optional)
+WANDB_ENTITY=tplr
+
+# WandB mode - controls how data is sent to WandB
+# - "online": Send data to WandB cloud in real-time (production)
+# - "offline": Store data locally, sync later with: wandb sync
+# - "disabled": Disable WandB completely
+WANDB_MODE=disabled
+
+# Tags for organizing runs (comma-separated)
+WANDB_TAGS=grail,bittensor,production
+
+# Description/notes for runs
+WANDB_NOTES=GRAIL
+
+# Resume behavior for interrupted runs
+# - "allow": Resume if possible, create new otherwise
+# - "must": Must resume existing run (fails if not found)
+# - "never": Always create new run
+# - "auto": Automatically resume based on run ID
+WANDB_RESUME=allow
+
+# ============================================================================
+# MONITORING PERFORMANCE TUNING
+# ============================================================================
+# Number of metrics to buffer before flushing to WandB (default: 100)
+# Higher values = less network calls but more memory usage
+GRAIL_METRIC_BUFFER_SIZE=100
+
+# Interval in seconds between automatic metric flushes (default: 30.0)
+# Lower values = more real-time data but more network overhead
+GRAIL_METRIC_FLUSH_INTERVAL=30.0
+
+
+
+# ============================================================================
+# GRAIL TRAINING CONFIGURATION
+# ============================================================================
+# Learning rate for GRPO training (default: 2e-6)
+GRAIL_TRAINER_LR=1e-6
+
+# Number of training epochs per window (default: 2)
+GRAIL_TRAINER_EPOCHS=2
+
+# Batch size for training (default: 4)
+GRAIL_TRAINER_BATCH_SIZE=16
+
+# Maximum sequence length for training (default: 1024)
+GRAIL_TRAINER_MAX_LENGTH=512
+
+# Gradient clipping threshold (default: 0.5)
+GRAIL_TRAINER_GRAD_CLIP=0.5
+
+# Number of warmup steps for learning rate scheduler (default: 10)
+GRAIL_TRAINER_WARMUP_STEPS=10
+
+# KL divergence coefficient for regularization (default: 0.02)
+GRAIL_TRAINER_KL_COEF=0.02
+
+# Entropy coefficient for exploration (default: 0.001)
+GRAIL_TRAINER_ENTROPY_COEF=0.001
+
+# Advantage clipping percentile (default: 99.0)
+GRAIL_TRAINER_ADV_CLIP_PERCENTILE=99.0
+
+# Group advantage sum tolerance for GRPO (default: 0.01)
+GRAIL_TRAINER_GROUP_ADV_SUM_TOL=0.01
+
+# Enable Flash Attention for training model optimization (default: 1/true)
+# Flash Attention 2 provides 2-4x faster training with no quality loss
+# Requires flash-attn package: uv pip install flash-attn --no-build-isolation
+# Set to 0 to disable (useful for debugging or older GPUs without Flash Attention support)
+GRAIL_TRAINER_USE_FLASH_ATTENTION=1
+
+# ============================================================================
+# GRPO GROUP FILTERING & RANKING CONFIGURATION
+# ============================================================================
+# Maximum number of groups to use for training (default: 32)
+# When more groups are available after filtering, the top-ranked groups by
+# combined efficiency score are selected
+GRAIL_GRPO_MAX_GROUPS=32
+
+# Maximum completion tokens per rollout (default: 512, 0 disables)
+# Filters out groups with any rollout exceeding this length
+GRAIL_GRPO_MAX_COMPLETION_TOKENS=512
+
+# Minimum success fraction within a group (default: 0.0, range: 0.0-1.0)
+# Filters out groups where fewer than this fraction of rollouts succeeded
+# Example: 0.25 requires at least 25% of rollouts in a group to succeed
+GRAIL_GRPO_MIN_SUCCESS_FRACTION=0.0
+
+# Minimum mean reward per token threshold (default: 0.0, <=0 disables)
+# Filters out groups with reward/token below this threshold
+# Implements GFPO (Group Filtered Policy Optimization) efficiency filtering
+GRAIL_GRPO_MIN_REWARD_PER_TOKEN=0.0
+
+# Drop lowest quantile by reward/token (default: 0.0, range: 0.0-1.0)
+# Drops the bottom X% of groups ranked by reward/token before final selection
+# Example: 0.1 drops the worst 10% of groups
+GRAIL_GRPO_REWARD_PER_TOKEN_DROP_QUANTILE=0.0
+
+# Group ranking weights for combined efficiency score (must sum to 1.0)
+# These weights determine how groups are ranked when selecting top groups:
+# - REWARD_WEIGHT: Prioritizes token-efficient solutions (GFPO principle)
+# - VARIANCE_WEIGHT: Prioritizes strong learning signal (advantage spread)
+# Default: 0.7/0.3 favors efficiency while considering signal strength
+GRAIL_GRPO_RANKING_REWARD_WEIGHT=0.7
+GRAIL_GRPO_RANKING_VARIANCE_WEIGHT=0.3
+
+# ============================================================================
+# GRAIL CHECKPOINT CONFIGURATION
+# ============================================================================
+# Number of checkpoints to keep on R2 (default: 10)
+GRAIL_CHECKPOINT_RETENTION_LIMIT=3
+
+# Interval for milestone checkpoints (every N windows, default: 100)
+GRAIL_CHECKPOINT_MILESTONE_INTERVAL=100
+
+# Local cache directory for checkpoints (default: ~/.cache/grail)
+GRAIL_CACHE_DIR=/root/.cache/grail
