@@ -55,8 +55,16 @@ logger = logging.getLogger("worker")
 class WorkerState:
     """Clean state management for worker resources."""
 
-    def __init__(self, device: str = "cuda"):
-        self.device = device if torch.cuda.is_available() else "cpu"
+    def __init__(self, redis_client: aioredis.Redis | None = None):
+        # Decide device automatically.
+        # With per-process CUDA_VISIBLE_DEVICES set, "cuda" will map to the
+        # single visible GPU for this worker. If no GPU is available, fall
+        # back to CPU.
+        env_device = os.getenv("GRAIL_DEVICE")
+        if env_device is not None:
+            self.device = env_device
+        else:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = None
         self.tokenizer = None
         self.current_checkpoint_window: int | None = None
@@ -64,7 +72,8 @@ class WorkerState:
         self.agent_loop: AgentEnvLoop | None = None
         self.timers = MiningTimers()
         self.loop_batch_size: int | None = None
-
+        self.redis_client = redis_client
+        
     async def ensure_checkpoint_loaded(
         self, window_start: int, checkpoint_credentials: dict
     ) -> bool:
@@ -108,6 +117,19 @@ class WorkerState:
             
             checkpoint_path = None
             while waited < max_wait_seconds:
+                if self.redis_client is not None:
+                    try:
+                        active_str = await self.redis_client.get("grail:active_window")
+                        if active_str is not None:
+                            active_window = int(active_str)
+                            if active_window > window_start:
+                                logger.warning(
+                                    f"Active window advanced to {active_window} while waiting for "
+                                    f"checkpoint {checkpoint_window}; abandoning job for window {window_start}"
+                                )
+                                return False
+                    except Exception as e:
+                        logger.warning(f"Error checking active window: {e}")
                 if checkpoint_dir.exists() and checkpoint_dir.is_dir():
                     # Ensure checkpoint is complete, not partial download
                     partial_dir = cache_root / f"checkpoint-{checkpoint_window}.partial"
@@ -406,7 +428,6 @@ async def worker_loop(
     redis_url: str,
     job_queue: str,
     result_queue: str,
-    device: str,
     max_concurrent: int = 1,
 ) -> None:
     """Main worker loop - consume jobs from Redis and process them.
@@ -418,16 +439,25 @@ async def worker_loop(
         device: Device for model (cuda/cpu)
         max_concurrent: Maximum concurrent jobs (default 1 for sequential processing)
     """
-    # Initialize worker state
-    state = WorkerState(device=device)
 
     try:
         # Connect to Redis
         redis_client = aioredis.from_url(redis_url, decode_responses=True)
         logger.info(f"✅ Connected to Redis at {redis_url}")
+        # Decide device once per process for logging; WorkerState also
+        # determines its own device (using the same env/heuristics).
+        env_device = os.getenv("GRAIL_DEVICE")
+        device = env_device if env_device is not None else (
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
         logger.info(f"📥 Consuming from queue: {job_queue}")
         logger.info(f"📤 Publishing to queue: {result_queue}")
         logger.info(f"🖥️  Device: {device}")
+
+        # Initialize worker state
+        state = WorkerState(redis_client=redis_client)
+        logger.info(f"✅ Initialized worker state")
+        logger.info(f"✅ Redis client: {redis_client}")
 
         while True:
             try:
@@ -477,11 +507,6 @@ def main() -> None:
     """Entry point for worker process."""
     parser = argparse.ArgumentParser(description="GRAIL Worker - Redis Queue Consumer")
     parser.add_argument(
-        "--device",
-        default=os.getenv("GRAIL_DEVICE", "cuda" if torch.cuda.is_available() else "cpu"),
-        help="Device for model (cuda/cpu)",
-    )
-    parser.add_argument(
         "--redis-url",
         default=os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0"),
         help="Redis connection URL",
@@ -508,7 +533,13 @@ def main() -> None:
     logger.info("=" * 80)
     logger.info("GRAIL Worker Starting")
     logger.info("=" * 80)
-    logger.info(f"Device: {args.device}")
+    # For visibility, log the device decision using the same heuristic as
+    # worker_loop / WorkerState.
+    env_device = os.getenv("GRAIL_DEVICE")
+    device = env_device if env_device is not None else (
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
+    logger.info(f"Device: {device}")
     logger.info(f"Redis URL: {args.redis_url}")
     logger.info(f"Job Queue: {args.job_queue}")
     logger.info(f"Result Queue: {args.result_queue}")
@@ -522,7 +553,6 @@ def main() -> None:
                 redis_url=args.redis_url,
                 job_queue=args.job_queue,
                 result_queue=args.result_queue,
-                device=args.device,
                 max_concurrent=args.max_concurrent,
             )
         )

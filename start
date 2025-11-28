@@ -27,12 +27,29 @@ hf auth login --token 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
 find . | grep -E "(/__pycache__$|\.pyc$|\.pyo$)" | xargs rm -rf
 
 
-
+python3 -c "from datasets import load_dataset; \
+    load_dataset('openai/gsm8k', 'main', split='train'); \
+    load_dataset('openai/gsm8k', 'main', split='test'); \
+    load_dataset('EleutherAI/hendrycks_math', 'algebra', split='train'); \
+    load_dataset('EleutherAI/hendrycks_math', 'algebra', split='test'); \
+    load_dataset('EleutherAI/hendrycks_math', 'counting_and_probability', split='train'); \
+    load_dataset('EleutherAI/hendrycks_math', 'counting_and_probability', split='test'); \
+    load_dataset('EleutherAI/hendrycks_math', 'geometry', split='train'); \
+    load_dataset('EleutherAI/hendrycks_math', 'geometry', split='test'); \
+    load_dataset('EleutherAI/hendrycks_math', 'intermediate_algebra', split='train'); \
+    load_dataset('EleutherAI/hendrycks_math', 'intermediate_algebra', split='test'); \
+    load_dataset('EleutherAI/hendrycks_math', 'number_theory', split='train'); \
+    load_dataset('EleutherAI/hendrycks_math', 'number_theory', split='test'); \
+    load_dataset('EleutherAI/hendrycks_math', 'prealgebra', split='train'); \
+    load_dataset('EleutherAI/hendrycks_math', 'prealgebra', split='test'); \
+    load_dataset('EleutherAI/hendrycks_math', 'precalculus', split='train'); \
+    load_dataset('EleutherAI/hendrycks_math', 'precalculus', split='test'); \
+    print('GSM8K and MATH datasets downloaded to HuggingFace cache')"
 
 
 
 # python3 -c "from datasets import load_dataset; load_dataset('openai/gsm8k', 'main', split='train'); load_dataset('openai/gsm8k', 'main', split='test'); print('GSM8K dataset downloaded to HuggingFace cache')"
-python3 -c "from datasets import load_dataset; load_dataset('nlile/hendrycks-MATH-benchmark', split='train'); load_dataset('nlile/hendrycks-MATH-benchmark', split='test'); print('MATH dataset downloaded to HuggingFace cache')"
+# python3 -c "from datasets import load_dataset; load_dataset('nlile/hendrycks-MATH-benchmark', split='train'); load_dataset('nlile/hendrycks-MATH-benchmark', split='test'); print('MATH dataset downloaded to HuggingFace cache')"
 
 
 
@@ -41,7 +58,7 @@ python3 -c "from datasets import load_dataset; load_dataset('nlile/hendrycks-MAT
 export NETUID=81
 export USE_TRAINER_BUCKET=1
 export BT_WALLET_COLD=ein
-export BT_WALLET_HOT=ein41
+export BT_WALLET_HOT=ein40
 export GRAIL_WAIT_FOR_DL_MANAGER=1
 export HF_DATASETS_CACHE="/root/.cache/huggingface/datasets"
 export HF_HOME="/root/.cache/huggingface"
@@ -63,23 +80,19 @@ pm2 start --name workerhf:cuda6 python -- worker.py --redis-url $REDIS_URL --job
 pm2 start --name workerhf:cuda7 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:7
 
 
+
+pm2 start --name workerhf:cuda0-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:0
+pm2 start --name workerhf:cuda1-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:1
+pm2 start --name workerhf:cuda2-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:2
+pm2 start --name workerhf:cuda3-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:3
+pm2 start --name workerhf:cuda4-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:4
+pm2 start --name workerhf:cuda5-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:5
+pm2 start --name workerhf:cuda6-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:6
+pm2 start --name workerhf:cuda7-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:7
+
+
+
 redis-cli -p 25836 FLUSHALL
-
-
-export REDIS_URL=redis://
-pm2 start --name workerhf:cuda0 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:0
-pm2 start --name workerhf:cuda1 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:1
-pm2 start --name workerhf:cuda2 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:2
-pm2 start --name workerhf:cuda3 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:3
-pm2 start --name workerhf:cuda4 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:4
-pm2 start --name workerhf:cuda5 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:5
-pm2 start --name workerhf:cuda6 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:6
-pm2 start --name workerhf:cuda7 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:7
-
-pm2 start --name dl-manager python -- scripts/download_manager.py
-
-
-
 
 
 
@@ -93,7 +106,41 @@ nohup redis-server /root/grail/redis.conf > /root/grail/redis.out 2>&1 &
 
 
 
+export CUDA_VISIBLE_DEVICES=0
+pm2 start --name workerhf:cuda0 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=1
+pm2 start --name workerhf:cuda1 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=2
+pm2 start --name workerhf:cuda2 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=3
+pm2 start --name workerhf:cuda3 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results
+export CUDA_VISIBLE_DEVICES=4
+pm2 start --name workerhf:cuda4 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=5
+pm2 start --name workerhf:cuda5 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=6
+pm2 start --name workerhf:cuda6 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=7
+pm2 start --name workerhf:cuda7 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
 
+
+
+export CUDA_VISIBLE_DEVICES=0
+pm2 start --name workerhf:cuda0-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=1
+pm2 start --name workerhf:cuda1-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=2
+pm2 start --name workerhf:cuda2-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=3
+pm2 start --name workerhf:cuda3-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=4
+pm2 start --name workerhf:cuda4-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=5
+pm2 start --name workerhf:cuda5-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=6
+pm2 start --name workerhf:cuda6-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=7
+pm2 start --name workerhf:cuda7-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
 
 
 
