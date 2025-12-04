@@ -411,7 +411,7 @@ async def run(args: argparse.Namespace) -> None:
 
     # Configuration
     max_groups_per_window = int(os.getenv("GRAIL_MAX_GROUPS_PER_WINDOW", "2560"))
-    temperature = float(os.getenv("GRAIL_TEMPERATURE", "0.85"))
+    temperature = float(os.getenv("GRAIL_TEMPERATURE", "0.7"))
     upload_threshold = int(os.getenv("GRAIL_UPLOAD_THRESHOLD", "64"))
     use_drand_flag = os.getenv("GRAIL_USE_DRAND", "1").lower() not in (
         "0",

@@ -20,7 +20,7 @@ wandb disabled
 
 find . | grep -E "(/__pycache__$|\.pyc$|\.pyo$)" | xargs rm -rf
 
-redis-cli -p 25836 FLUSHALL
+redis-cli -p 44090 FLUSHALL
 rm -rf ~/.cache
 
 hf auth login --token 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
@@ -58,41 +58,38 @@ python3 -c "from datasets import load_dataset; \
 export NETUID=81
 export USE_TRAINER_BUCKET=1
 export BT_WALLET_COLD=ein
-export BT_WALLET_HOT=ein40
+export BT_WALLET_HOT=ein42
 export GRAIL_WAIT_FOR_DL_MANAGER=1
 export HF_DATASETS_CACHE="/root/.cache/huggingface/datasets"
 export HF_HOME="/root/.cache/huggingface"
 export HF_DATASETS_OFFLINE=1
-export REDIS_URL=redis://127.0.0.1:25836
+export REDIS_URL=redis://127.0.0.1:44090
 export GRAIL_GENERATION_BATCH_SIZE=16
 
 pm2 start --name miner python -- miner.py
 
 pm2 start --name dl-manager python -- scripts/download_manager.py
 
-pm2 start --name workerhf:cuda0 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:0
-pm2 start --name workerhf:cuda1 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:1
-pm2 start --name workerhf:cuda2 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:2
-pm2 start --name workerhf:cuda3 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:3
-pm2 start --name workerhf:cuda4 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:4
-pm2 start --name workerhf:cuda5 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:5
-pm2 start --name workerhf:cuda6 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:6
-pm2 start --name workerhf:cuda7 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:7
+export CUDA_VISIBLE_DEVICES=0
+pm2 start --name workerhf:cuda0 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=1
+pm2 start --name workerhf:cuda1 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=2
+pm2 start --name workerhf:cuda2 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=3
+pm2 start --name workerhf:cuda3 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results
+export CUDA_VISIBLE_DEVICES=4
+pm2 start --name workerhf:cuda4 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=5
+pm2 start --name workerhf:cuda5 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=6
+pm2 start --name workerhf:cuda6 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
+export CUDA_VISIBLE_DEVICES=7
+pm2 start --name workerhf:cuda7 python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results 
 
 
 
-pm2 start --name workerhf:cuda0-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:0
-pm2 start --name workerhf:cuda1-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:1
-pm2 start --name workerhf:cuda2-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:2
-pm2 start --name workerhf:cuda3-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:3
-pm2 start --name workerhf:cuda4-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:4
-pm2 start --name workerhf:cuda5-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:5
-pm2 start --name workerhf:cuda6-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:6
-pm2 start --name workerhf:cuda7-b python -- worker.py --redis-url $REDIS_URL --job-queue grail:jobs --result-queue grail:results --device cuda:7
-
-
-
-redis-cli -p 25836 FLUSHALL
+redis-cli -p 44090 FLUSHALL
 
 
 

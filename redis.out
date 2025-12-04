@@ -1,10 +1,10 @@
 nohup: ignoring input
-11152:C 15 Nov 2025 00:45:41.138 # oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
-11152:C 15 Nov 2025 00:45:41.138 # Redis version=7.0.15, bits=64, commit=00000000, modified=0, pid=11152, just started
-11152:C 15 Nov 2025 00:45:41.138 # Configuration loaded
-11152:M 15 Nov 2025 00:45:41.138 * monotonic clock: POSIX clock_gettime
-11152:M 15 Nov 2025 00:45:41.138 * Running mode=standalone, port=25836.
-11152:M 15 Nov 2025 00:45:41.138 # WARNING: The TCP backlog setting of 10240 cannot be enforced because /proc/sys/net/core/somaxconn is set to the lower value of 4096.
-11152:M 15 Nov 2025 00:45:41.138 # Server initialized
-11152:M 15 Nov 2025 00:45:41.139 # WARNING Memory overcommit must be enabled! Without it, a background save or replication may fail under low memory condition. Being disabled, it can can also cause failures without low memory condition, see https://github.com/jemalloc/jemalloc/issues/1328. To fix this issue add 'vm.overcommit_memory = 1' to /etc/sysctl.conf and then reboot or run the command 'sysctl vm.overcommit_memory=1' for this to take effect.
-11152:M 15 Nov 2025 00:45:41.140 * Ready to accept connections
+13382:C 03 Dec 2025 10:09:16.577 # oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+13382:C 03 Dec 2025 10:09:16.577 # Redis version=7.0.15, bits=64, commit=00000000, modified=0, pid=13382, just started
+13382:C 03 Dec 2025 10:09:16.577 # Configuration loaded
+13382:M 03 Dec 2025 10:09:16.577 * monotonic clock: POSIX clock_gettime
+13382:M 03 Dec 2025 10:09:16.578 * Running mode=standalone, port=44090.
+13382:M 03 Dec 2025 10:09:16.592 # WARNING: The TCP backlog setting of 10240 cannot be enforced because /proc/sys/net/core/somaxconn is set to the lower value of 4096.
+13382:M 03 Dec 2025 10:09:16.592 # Server initialized
+13382:M 03 Dec 2025 10:09:16.592 # WARNING Memory overcommit must be enabled! Without it, a background save or replication may fail under low memory condition. Being disabled, it can can also cause failures without low memory condition, see https://github.com/jemalloc/jemalloc/issues/1328. To fix this issue add 'vm.overcommit_memory = 1' to /etc/sysctl.conf and then reboot or run the command 'sysctl vm.overcommit_memory=1' for this to take effect.
+13382:M 03 Dec 2025 10:09:16.594 * Ready to accept connections
