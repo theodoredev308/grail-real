@@ -20,6 +20,10 @@ import orjson as json
 import redis.asyncio as aioredis
 
 from grail.infrastructure.chain import GrailChainManager
+from grail.infrastructure.checkpoint_consumer import (
+    CheckpointManager,
+    default_checkpoint_cache_root,
+)
 from grail.infrastructure.comms import sink_window_inferences
 from grail.infrastructure.credentials import load_r2_credentials
 from grail.infrastructure.drand import get_beacon as get_drand_beacon
@@ -90,6 +94,7 @@ async def schedule_window_jobs(
     max_groups: int,
     temperature: float,
     difficulty: float,
+    checkpoint_window: int,
 ) -> int:
     """Schedule all jobs for a window to Redis queue.
 
@@ -104,6 +109,7 @@ async def schedule_window_jobs(
         max_groups: Maximum number of groups to schedule
         temperature: Generation temperature
         difficulty: Problem difficulty
+        checkpoint_window: Checkpoint window to use for this mining window
 
     Returns:
         Number of jobs scheduled
@@ -123,6 +129,7 @@ async def schedule_window_jobs(
             "temperature": temperature,
             "checkpoint_credentials": trainer_creds,
             "use_drand": True,
+            "checkpoint_window": checkpoint_window,
         }
         jobs_to_submit.append(json.dumps(job))
 
@@ -401,6 +408,8 @@ async def run(args: argparse.Namespace) -> None:
 
     # Get trainer checkpoint credentials
     trainer_bucket = chain.get_bucket(TRAINER_UID)
+    if trainer_bucket is None:
+        raise RuntimeError(f"Trainer bucket for UID {TRAINER_UID} not found")
     trainer_creds = {
         "account_id": trainer_bucket.account_id,
         "access_key_id": trainer_bucket.access_key_id,
@@ -408,6 +417,14 @@ async def run(args: argparse.Namespace) -> None:
         "name": trainer_bucket.name,
     }
     logger.info(f"✅ Using trainer UID {TRAINER_UID} bucket for checkpoints")
+
+    # Initialize checkpoint manager (read-only, consumer role)
+    checkpoint_credentials = trainer_bucket or credentials
+    checkpoint_manager = CheckpointManager(
+        cache_root=default_checkpoint_cache_root(),
+        credentials=checkpoint_credentials,
+        keep_limit=2,
+    )
 
     # Configuration
     max_groups_per_window = int(os.getenv("GRAIL_MAX_GROUPS_PER_WINDOW", "2560"))
@@ -464,6 +481,20 @@ async def run(args: argparse.Namespace) -> None:
             logger.info(f"🔥 NEW WINDOW: {window_start}")
             logger.info("=" * 80)
 
+            # Discover latest READY checkpoint before this window
+            checkpoint_window = await checkpoint_manager.get_latest_ready_checkpoint(
+                window_start
+            )
+            if checkpoint_window is None:
+                logger.error(
+                    "No READY checkpoints available before window %s; "
+                    "skipping job scheduling for this window",
+                    window_start,
+                )
+                last_window = window_start
+                await asyncio.sleep(10)
+                continue
+
             # Derive randomness
             window_block_hash, randomness = await derive_randomness(
                 subtensor, window_start, use_drand_flag
@@ -478,6 +509,9 @@ async def run(args: argparse.Namespace) -> None:
                 await redis_client.delete(job_queue)
                 await redis_client.delete(result_queue)
                 await redis_client.set("grail:active_window", str(window_start), ex=3600)
+                await redis_client.set(
+                    "grail:checkpoint_window", str(checkpoint_window), ex=3600
+                )
                 logger.info("🧹 Cleared old jobs and results")
             except Exception as e:
                 logger.warning(f"Failed to clear queues: {e}")
@@ -495,6 +529,7 @@ async def run(args: argparse.Namespace) -> None:
                 max_groups_per_window,
                 temperature,
                 difficulty,
+                checkpoint_window,
             )
 
             # Calculate upload deadline

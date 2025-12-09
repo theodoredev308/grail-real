@@ -8,7 +8,7 @@ from typing import Any
 
 import redis.asyncio as aioredis
 
-from grail.infrastructure.checkpoints import (
+from grail.infrastructure.checkpoint_consumer import (
     CheckpointManager,
     default_checkpoint_cache_root,
 )
@@ -31,6 +31,14 @@ logging.basicConfig(
 async def _get_active_window(r: aioredis.Redis) -> int | None:
     try:
         s = await r.get("grail:active_window")
+        return int(s) if s is not None else None
+    except Exception:
+        return None
+
+
+async def _get_checkpoint_window(r: aioredis.Redis) -> int | None:
+    try:
+        s = await r.get("grail:checkpoint_window")
         return int(s) if s is not None else None
     except Exception:
         return None
@@ -98,8 +106,15 @@ async def main() -> None:
             if window_start is None:
                 await asyncio.sleep(1.0)
                 continue
+            ckpt_window = await _get_checkpoint_window(r)
+            if ckpt_window is None:
+                logging.warning(
+                    "No checkpoint_window set in Redis for active window=%s; waiting for miner...",
+                    window_start,
+                )
+                await asyncio.sleep(1.0)
+                continue
 
-            ckpt_window = max(0, int(window_start) - int(WINDOW_LENGTH))
             if last_ckpt_window is not None and ckpt_window == last_ckpt_window:
                 await asyncio.sleep(1.0)
                 continue

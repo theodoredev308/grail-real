@@ -28,10 +28,7 @@ from grail.cli.mine import (
 from grail.environments.loop import AgentEnvLoop
 from grail.environments.factory import create_env
 from grail.grail import derive_env_seed
-from grail.infrastructure.checkpoints import (
-    CheckpointManager,
-    default_checkpoint_cache_root,
-)
+from grail.infrastructure.checkpoint_consumer import default_checkpoint_cache_root
 from grail.model.provider import clear_model_and_tokenizer, get_model, get_tokenizer
 from grail.shared.chat_templates import build_qwen_chat_template
 from grail.shared.constants import (
@@ -68,14 +65,16 @@ class WorkerState:
         self.model = None
         self.tokenizer = None
         self.current_checkpoint_window: int | None = None
-        self.checkpoint_manager: CheckpointManager | None = None
         self.agent_loop: AgentEnvLoop | None = None
         self.timers = MiningTimers()
         self.loop_batch_size: int | None = None
         self.redis_client = redis_client
         
     async def ensure_checkpoint_loaded(
-        self, window_start: int, checkpoint_credentials: dict
+        self,
+        window_start: int,
+        checkpoint_credentials: dict,
+        checkpoint_window: int | None = None,
     ) -> bool:
         """Load checkpoint for the target window.
         
@@ -85,12 +84,17 @@ class WorkerState:
         Args:
             window_start: Window start block
             checkpoint_credentials: Credentials from job payload
+            checkpoint_window: Optional explicit checkpoint window to use. If None,
+                defaults to previous-window heuristic (window_start - WINDOW_LENGTH).
 
         Returns:
             True if checkpoint loaded successfully
         """
-        # Miners use checkpoint from previous window
-        checkpoint_window = max(0, window_start - WINDOW_LENGTH)
+        # Determine checkpoint window:
+        # - Prefer explicit checkpoint_window from job payload (matches miner)
+        # - Fallback to previous-window heuristic for backward compatibility
+        if checkpoint_window is None:
+            checkpoint_window = max(0, window_start - WINDOW_LENGTH)
 
         # Check if already loaded
         if self.current_checkpoint_window == checkpoint_window and self.model is not None:
@@ -318,7 +322,16 @@ async def generate_group_rollouts(
 
         # Package rollouts (matches default miner format exactly)
         current_block = window_start  # Use window_start as block for consistency
-        packaged_rollouts = []
+        packaged_rollouts: list[dict] = []
+
+        # Use the checkpoint window actually loaded by this worker.
+        checkpoint_window = state.current_checkpoint_window
+        if checkpoint_window is None:
+            logger.error(
+                "Checkpoint window is not set in state while packaging rollouts for group %s",
+                group_id,
+            )
+            return []
 
         for rollout_idx, rollout in enumerate(grpo_rollouts):
             rollout_data = package_rollout_data(
@@ -333,6 +346,7 @@ async def generate_group_rollouts(
                 window_block_hash,
                 randomness_hex,
                 use_drand,
+                checkpoint_window,
             )
             packaged_rollouts.append(rollout_data)
 
@@ -366,18 +380,33 @@ async def process_job(state: WorkerState, job_data: dict) -> dict:
         randomness_hex = str(job_data.get("randomness_hex", ""))
         group_id = int(job_data.get("group_id", 0))
         checkpoint_credentials = job_data.get("checkpoint_credentials")
+        # Optional explicit checkpoint window (preferred when provided)
+        raw_ckpt_window = job_data.get("checkpoint_window")
+        checkpoint_window: int | None
+        try:
+            checkpoint_window = int(raw_ckpt_window) if raw_ckpt_window is not None else None
+        except Exception:
+            checkpoint_window = None
         use_drand = bool(job_data.get("use_drand", True))
 
         # Handle preload requests
         if job_data.get("preload", False):
             logger.info(f"Preloading checkpoint for window {window_start}")
-            success = await state.ensure_checkpoint_loaded(window_start, checkpoint_credentials)
+            success = await state.ensure_checkpoint_loaded(
+                window_start,
+                checkpoint_credentials,
+                checkpoint_window,
+            )
             if success:
                 logger.info(f"✅ Preloaded checkpoint for window {window_start}")
             return {"group_id": group_id, "inferences": [], "rewards": []}
 
         # Load checkpoint for this window
-        success = await state.ensure_checkpoint_loaded(window_start, checkpoint_credentials)
+        success = await state.ensure_checkpoint_loaded(
+            window_start,
+            checkpoint_credentials,
+            checkpoint_window,
+        )
         if not success:
             logger.error(f"Failed to load checkpoint for window {window_start}")
             return {"group_id": group_id, "inferences": [], "rewards": []}
