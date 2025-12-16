@@ -235,10 +235,12 @@ class CheckpointManager:
                 )
                 return None
 
-    async def cleanup_local(self, current_window: int) -> None:
+    async def cleanup_local(self, current_window: int, keep_extra: set[int] | None = None) -> None:
         """Remove cached checkpoints outside the retention policy."""
 
         keep_windows = self._compute_keep_windows(current_window)
+        if keep_extra:
+            keep_windows.update(keep_extra)
 
         # Apply MOD10 remapping if enabled (must match get_checkpoint)
         if GRAIL_CHECKPOINT_MOD10:

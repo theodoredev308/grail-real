@@ -110,11 +110,13 @@ def get_model(
     # Load model with optimized attention if available
     # Use bfloat16 for any CUDA device (cuda, cuda:0, cuda:1, etc.), bfloat16 for CPU
     use_bfloat16 = device.startswith("cuda") if isinstance(device, str) else False
+    is_local_path = model_path.is_absolute() or (model_path.exists() and model_path.is_dir())
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         use_safetensors=use_safetensors,
         attn_implementation=attn_implementation,
         torch_dtype=torch.bfloat16 if use_bfloat16 else torch.bfloat16,
+        local_files_only=is_local_path,
     )
 
     # Preserve original model name for GRAIL proof validation
