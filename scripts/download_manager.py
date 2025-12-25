@@ -128,7 +128,7 @@ async def main() -> None:
             path = await mgr.get_checkpoint(ckpt_window)
             if path is not None:
                 try:
-                    await mgr.cleanup_local(window_start, keep_extra={ckpt_window})
+                    await mgr.cleanup_local(window_start)
                 except Exception:
                     pass
                 last_ckpt_window = ckpt_window
@@ -234,7 +234,7 @@ async def main() -> None:
                 continue
 
             try:
-                await mgr.cleanup_local(window_start, keep_extra={ckpt_window})
+                await mgr.cleanup_local(window_start)
             except Exception:
                 pass
 

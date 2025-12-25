@@ -168,69 +168,59 @@ class MinerNeuron(BaseNeuron):
                     # Window is available - reset tracker
                     window_wait_tracker.reset()
 
-                    # Discover latest ready checkpoint (before current window)
-                    # This allows miners to proceed even if trainer is lagging
-                    checkpoint_window = await checkpoint_manager.get_latest_ready_checkpoint(
-                        window_start
+                    # Load or update checkpoint (unified fast/slow path)
+                    timer_ctx = (
+                        monitor.timer("profiling/checkpoint_load")
+                        if monitor
+                        else contextlib.nullcontext()
                     )
+                    with timer_ctx:
+                        result, checkpoint_path = await checkpoint_manager.load_or_update_model(
+                            window_start, model, current_checkpoint_window
+                        )
+                    self.heartbeat()
 
-                    # Load checkpoint if discovered and different from current
-                    if checkpoint_window is not None and checkpoint_window >= 0:
-                        if current_checkpoint_window != checkpoint_window:
-                            # Time checkpoint download/retrieval
-                            timer_ctx = (
-                                monitor.timer("profiling/checkpoint_download")
-                                if monitor
-                                else contextlib.nullcontext()
+                    if result.success:
+                        if result.is_fast_path:
+                            # Fast path: model already updated in-place
+                            current_checkpoint_window = result.window
+                            logger.info("⚡ Model updated in-place to window %s", result.window)
+                        elif checkpoint_path is not None:
+                            # Slow path: load from disk
+                            logger.info(
+                                "🔁 Loading checkpoint for window %s from %s",
+                                result.window,
+                                checkpoint_path,
                             )
-                            with timer_ctx:
-                                checkpoint_path = await checkpoint_manager.get_checkpoint(
-                                    checkpoint_window
-                                )
-                            self.heartbeat()
+                            try:
+                                model, tokenizer = clear_model_and_tokenizer(model, tokenizer)
+                                model = get_model(str(checkpoint_path), device=None, eval_mode=True)
+                                tokenizer = get_tokenizer(str(checkpoint_path))
+                                current_checkpoint_window = result.window
 
-                            if checkpoint_path is not None:
-                                logger.info(
-                                    "🔁 Loading checkpoint for window %s from %s",
-                                    checkpoint_window,
-                                    checkpoint_path,
-                                )
-                                try:
-                                    # Pre-load cleanup to prevent VRAM growth when swapping
-                                    model, tokenizer = clear_model_and_tokenizer(model, tokenizer)
-                                    model = get_model(
-                                        str(checkpoint_path), device=None, eval_mode=True
+                                if torch.cuda.is_available():
+                                    logger.info(
+                                        f"GPU Memory: allocated={torch.cuda.memory_allocated() / 1024**3:.2f}GB, "
+                                        f"reserved={torch.cuda.memory_reserved() / 1024**3:.2f}GB"
                                     )
-                                    tokenizer = get_tokenizer(str(checkpoint_path))
-                                    current_checkpoint_window = checkpoint_window
-
-                                    # Log model configuration details
-                                    if torch.cuda.is_available():
-                                        logger.info(
-                                            f"GPU Memory: allocated={torch.cuda.memory_allocated() / 1024**3:.2f}GB, "
-                                            f"reserved={torch.cuda.memory_reserved() / 1024**3:.2f}GB"
-                                        )
-                                        torch.cuda.empty_cache()
-                                except Exception:
-                                    logger.exception(
-                                        "Failed to load checkpoint for window %s",
-                                        checkpoint_window,
-                                    )
-                                    raise
-                            else:
-                                logger.warning(
-                                    "Checkpoint window %s not available, retaining current model",
-                                    checkpoint_window,
+                                    torch.cuda.empty_cache()
+                            except Exception:
+                                logger.exception(
+                                    "Failed to load checkpoint for window %s", result.window
                                 )
+                                raise
                     elif model is None or tokenizer is None:
-                        logger.error("No checkpoint available and no model loaded, cannot mine")
-                        await asyncio.sleep(60)
+                        # No checkpoint and no model - skip this window, wait for next
+                        logger.warning(
+                            "No checkpoint for window %s, waiting for next window", window_start
+                        )
+                        last_window_start = window_start
                         continue
 
-                    # Ensure model and tokenizer are loaded before mining
+                    # Safety check: ensure model and tokenizer are loaded before mining
                     if model is None or tokenizer is None:
                         logger.error("Model or tokenizer not loaded, cannot mine")
-                        await asyncio.sleep(30)
+                        last_window_start = window_start  # Prevent infinite loop
                         continue
 
                     logger.info(
@@ -260,7 +250,7 @@ class MinerNeuron(BaseNeuron):
                         timers,
                         monitor,
                         self.use_drand,
-                        checkpoint_window,
+                        current_checkpoint_window,
                     )
 
                     if inferences:

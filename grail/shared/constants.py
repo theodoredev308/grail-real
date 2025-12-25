@@ -121,8 +121,13 @@ GRPO_RANKING_REWARD_WEIGHT = float(os.getenv("GRAIL_GRPO_RANKING_REWARD_WEIGHT",
 GRPO_RANKING_VARIANCE_WEIGHT = float(os.getenv("GRAIL_GRPO_RANKING_VARIANCE_WEIGHT", "0.3"))
 
 # Checkpoint retention controls
-CHECKPOINT_RETENTION_LIMIT = int(os.getenv("GRAIL_CHECKPOINT_RETENTION_LIMIT", "3"))
-CHECKPOINT_MILESTONE_INTERVAL = int(os.getenv("GRAIL_CHECKPOINT_MILESTONE_INTERVAL", "100"))
+CHECKPOINT_MILESTONE_INTERVAL = int(os.getenv("GRAIL_CHECKPOINT_MILESTONE_INTERVAL", "0"))
+
+# R2 retention limits (used by checkpoint_publisher for trainer uploads)
+# BASE: complete model weights (~14GB); DELTA: sparse diffs that depend on a BASE
+# DELTA_RETENTION should be > DELTA_BASE_INTERVAL to prevent orphaned deltas
+BASE_CHECKPOINT_RETENTION_LIMIT = int(os.getenv("GRAIL_BASE_CHECKPOINT_RETENTION_LIMIT", "3"))
+DELTA_CHECKPOINT_RETENTION_LIMIT = int(os.getenv("GRAIL_DELTA_CHECKPOINT_RETENTION_LIMIT", "15"))
 
 # Trainer identity used for checkpoint publication
 TRAINER_UID = 0
@@ -196,7 +201,8 @@ GRAIL_BURN_PERCENTAGE = 80.0
 
 # Maximum unique rollouts per miner that count toward weight allocation.
 # Miners are rewarded proportionally to how close they are to this cap.
-UNIQUE_ROLLOUTS_CAP = 5120
+# This cap covers the full 12-window rolling period (5120 per window × 12 windows).
+UNIQUE_ROLLOUTS_CAP = 61440
 
 # ────────────────  MINER SAMPLING (VALIDATION COST CONTROL)  ────────────────
 
@@ -243,6 +249,73 @@ PROOF_POSITION_IMPORTANCE_DECAY = 100.0
 
 # GRAIL proof version
 GRAIL_PROOF_VERSION = "v1"
+
+# ────────────────  PARAMETER CHANGE TRACKING  ────────────────
+
+# Measure parameter changes every N optimizer steps (0 disables tracking)
+PARAM_CHANGE_MEASURE_INTERVAL = int(os.getenv("GRAIL_PARAM_CHANGE_MEASURE_INTERVAL", "0"))
+
+# Primary threshold for classifying a parameter as "changed"
+# With small LR (1e-6), weight updates can be very small (1e-9 to 1e-6)
+# Use 1e-10 as floor to catch all meaningful changes
+PARAM_CHANGE_THRESHOLD = float(os.getenv("GRAIL_PARAM_CHANGE_THRESHOLD", "0.0"))
+
+# Enable per-layer sparsity breakdown
+PARAM_CHANGE_TRACK_PER_LAYER = os.getenv("GRAIL_PARAM_CHANGE_TRACK_PER_LAYER", "1") == "1"
+
+# Enable per-component breakdown (q_proj, v_proj, gate_proj, etc.)
+PARAM_CHANGE_TRACK_COMPONENTS = os.getenv("GRAIL_PARAM_CHANGE_TRACK_COMPONENTS", "1") == "1"
+
+# Enable sign flip tracking (detects oscillation/instability)
+PARAM_CHANGE_TRACK_SIGN_FLIPS = os.getenv("GRAIL_PARAM_CHANGE_TRACK_SIGN_FLIPS", "1") == "1"
+
+# Epsilon for relative delta computation to avoid division by zero
+PARAM_CHANGE_RELATIVE_EPS = float(os.getenv("GRAIL_PARAM_CHANGE_RELATIVE_EPS", "1e-10"))
+
+# ────────────────  SPARSE QUALITY ANALYSIS  ────────────────
+
+# Enable/disable sparse quality analysis (runs at same interval as param tracking)
+SPARSE_QUALITY_ENABLED = os.getenv("GRAIL_SPARSE_QUALITY_ENABLED", "0") == "1"
+
+# ────────────────  CHECKPOINT PATH CONFIGURATION  ────────────────
+
+# R2 bucket prefix for all checkpoints
+CHECKPOINT_PREFIX = "grail/checkpoints/"
+
+# Subdirectory names for checkpoint types
+# At anchor windows, both DELTA and FULL coexist under:
+#   checkpoint-{window}/DELTA/  (sparse delta for caught-up consumers)
+#   checkpoint-{window}/FULL/   (full weights for new joiners)
+CHECKPOINT_SUBDIR_DELTA = "DELTA"
+CHECKPOINT_SUBDIR_FULL = "FULL"
+
+# Checkpoint type identifiers (used in metadata.json)
+CHECKPOINT_TYPE_DELTA = "DELTA"
+CHECKPOINT_TYPE_FULL = "FULL"
+
+
+# ────────────────  DELTA CHECKPOINT CONFIGURATION  ────────────────
+
+# Upload FULL checkpoint every N windows (deltas for intermediate windows)
+# Set to 1 to disable delta uploads (all FULL checkpoints)
+DELTA_BASE_INTERVAL = int(os.getenv("GRAIL_DELTA_BASE_INTERVAL", "10"))
+
+# Threshold for sparse delta (0 = keep all non-zero deltas)
+DELTA_THRESHOLD = float(os.getenv("GRAIL_DELTA_THRESHOLD", "0.0"))
+
+# Enable/disable delta checkpoint uploads (fallback to full if disabled)
+DELTA_CHECKPOINT_ENABLED = os.getenv("GRAIL_DELTA_CHECKPOINT_ENABLED", "1") == "1"
+
+# ──────────────── INVARIANT VALIDATION ────────────────────────────────────────
+# Ensure DELTA_CHECKPOINT_RETENTION_LIMIT >= DELTA_BASE_INTERVAL
+# This guarantees that retained deltas always have their base checkpoint available.
+# If violated, deltas can become orphaned when their base is deleted.
+assert DELTA_CHECKPOINT_RETENTION_LIMIT >= DELTA_BASE_INTERVAL, (
+    f"DELTA_CHECKPOINT_RETENTION_LIMIT ({DELTA_CHECKPOINT_RETENTION_LIMIT}) must be >= "
+    f"DELTA_BASE_INTERVAL ({DELTA_BASE_INTERVAL}) to prevent orphaned delta checkpoints. "
+    f"Deltas are created every DELTA_BASE_INTERVAL windows, so we must keep at least that many "
+    f"to ensure validators can reconstruct recent checkpoints."
+)
 
 # ────────────────  ASYNC TRAINING CONFIGURATION  ────────────────
 

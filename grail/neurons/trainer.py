@@ -145,9 +145,10 @@ class TrainerNeuron(BaseNeuron):
         Lifecycle:
         1. Start watchdog for liveness monitoring
         2. Initialize chain manager
-        3. Spawn training and upload worker processes
-        4. Enter orchestration loop (monitor health, coordinate evaluation)
-        5. Gracefully shutdown on exit
+        3. Request pause (if evaluation enabled) to prevent training before first eval
+        4. Spawn training and upload worker processes
+        5. Enter orchestration loop (first iteration runs initial evaluation)
+        6. Gracefully shutdown on exit
         """
         self.start_watchdog(
             timeout_seconds=WATCHDOG_TIMEOUT_SECONDS,
@@ -159,6 +160,14 @@ class TrainerNeuron(BaseNeuron):
         logger.info("Main process will not use GPU (training process owns GPU)")
 
         try:
+            # Request pause BEFORE starting training to ensure initial evaluation runs first.
+            # Training will see this flag when it enters its loop and confirm pause.
+            # The orchestration loop's first iteration will then run evaluation immediately
+            # since _coordinate_evaluation() will see pause already confirmed.
+            if self._eval_cfg.enabled:
+                self._ipc.request_pause()
+                logger.info("Pause requested before training start (initial evaluation pending)")
+
             logger.info("Starting async training and upload worker processes...")
             self._start_training_process()
             self._start_upload_worker()
@@ -182,7 +191,7 @@ class TrainerNeuron(BaseNeuron):
     def _start_training_process(self) -> None:
         """Spawn training process for continuous training."""
         wallet_args = self._serialize_wallet()
-        monitor_config = self._prepare_monitor_config()
+        monitor_config = self._prepare_monitor_config(subprocess_label="training_process")
 
         self._training_process = multiprocessing.Process(
             target=run_training_process,
@@ -204,6 +213,7 @@ class TrainerNeuron(BaseNeuron):
     def _start_upload_worker(self) -> None:
         """Spawn upload worker process for async uploads."""
         wallet_args = self._serialize_wallet()
+        monitor_config = self._prepare_monitor_config(subprocess_label="upload_worker")
 
         self._upload_process = multiprocessing.Process(
             target=run_upload_worker,
@@ -211,6 +221,7 @@ class TrainerNeuron(BaseNeuron):
                 self._snapshot_manager,
                 self._context.credentials,
                 wallet_args,
+                monitor_config,
                 self._ipc,
                 SNAPSHOT_POLL_INTERVAL_SECONDS,
                 self._context.verbosity,
@@ -331,7 +342,7 @@ class TrainerNeuron(BaseNeuron):
         current_window = (current_block // WINDOW_LENGTH) * WINDOW_LENGTH
 
         if self._context.monitor:
-            self._context.monitor.set_block_context(current_block, None)
+            self._context.monitor.set_block_context(current_block, current_window)
 
         return current_window
 
@@ -711,12 +722,19 @@ class TrainerNeuron(BaseNeuron):
                 server_model_name=server.model_name,
             )
 
-            metrics = await self._run_evaluation_cycle(
-                plan=plan,
-                window_number=window_number,
-                env_factory=env_factory,
-                evaluator=evaluator,
-            )
+            try:
+                metrics = await self._run_evaluation_cycle(
+                    plan=plan,
+                    window_number=window_number,
+                    env_factory=env_factory,
+                    evaluator=evaluator,
+                )
+            finally:
+                # Explicitly shutdown evaluator before server context exits
+                # to ensure all resources are released before vLLM process is killed
+                evaluator.shutdown()
+                del tokenizer
+                gc.collect()
 
         logger.info("Server shutdown complete")
         return metrics
@@ -802,7 +820,9 @@ class TrainerNeuron(BaseNeuron):
             eval_reason,
         )
 
-        return await evaluator.run_cycle(plan, start_offset=0, heartbeat=self.heartbeat)
+        return await evaluator.run_cycle(
+            plan, start_offset=0, heartbeat=self.heartbeat, window_number=window_number
+        )
 
     # ────────────────────────────────────────────────────────────────────────────
     # Helper Methods
@@ -820,7 +840,7 @@ class TrainerNeuron(BaseNeuron):
             "path": self._context.wallet.path,
         }
 
-    def _prepare_monitor_config(self) -> dict[str, Any]:
+    def _prepare_monitor_config(self, *, subprocess_label: str) -> dict[str, Any]:
         """Prepare monitoring config for child process.
 
         Returns:
@@ -843,11 +863,14 @@ class TrainerNeuron(BaseNeuron):
             elif "Null" in backend_class_name:
                 monitor_config["backend_type"] = "null"
 
-            # If using shared mode, training subprocess is a worker (not primary)
+            # If using shared mode, subprocess is a worker (not primary)
             if monitor_config.get("wandb_shared_mode"):
                 monitor_config["wandb_x_primary"] = False
-                monitor_config["wandb_x_label"] = "training_process"
-                logger.debug("Training subprocess will use shared mode as worker")
+                monitor_config["wandb_x_label"] = subprocess_label
+                logger.debug(
+                    "Subprocess %s will use WandB shared mode as worker",
+                    subprocess_label,
+                )
         else:
             # Fallback to manager config if backend doesn't have config
             monitor_config = self._context.monitor._config.copy()
@@ -859,8 +882,9 @@ class TrainerNeuron(BaseNeuron):
             if wandb_run and hasattr(wandb_run, "id"):
                 monitor_config["run_id"] = wandb_run.id
                 logger.info(
-                    "Passing W&B run ID %s to training process for multi-process logging",
+                    "Passing W&B run ID %s to %s for multi-process logging",
                     wandb_run.id,
+                    subprocess_label,
                 )
 
         # Debug log to verify config contents
