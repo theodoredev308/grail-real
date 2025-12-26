@@ -113,6 +113,8 @@ async def _cache_delta_window(
     delta_root.mkdir(parents=True, exist_ok=True)
 
     final_dir = delta_root / f"delta-{window}"
+    if final_dir.exists():
+        return final_dir
     tmp_dir = delta_root / f"delta-{window}.partial"
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -162,6 +164,54 @@ async def _cache_delta_window(
         raise
 
 
+async def _ensure_delta_chain_cached(
+    *,
+    target_window: int,
+    mgr: CheckpointManager,
+    credentials: Any,
+    checkpoint_cache_root: Path,
+) -> None:
+    """Ensure we have enough local artifacts for workers to update without disk reconstruction.
+
+    - Ensures anchor FULL checkpoint is present locally (for cold starts)
+    - Caches DELTA artifacts for the chain needed to reach target_window
+    """
+    meta = await mgr._fetch_metadata(target_window)  # noqa: SLF001
+    if meta is None or not meta.is_delta() or meta.prev_window is None:
+        return
+
+    anchor = meta.anchor_window
+    if anchor is not None:
+        anchor_dir = checkpoint_cache_root / f"checkpoint-{int(anchor)}"
+        if not anchor_dir.exists():
+            await mgr.get_checkpoint(int(anchor))
+
+    # Walk backwards caching deltas until we reach the anchor or a FULL checkpoint.
+    seen: set[int] = set()
+    cur = meta
+    while cur is not None and cur.is_delta() and cur.prev_window is not None:
+        w = int(cur.window)
+        if w in seen:
+            break
+        seen.add(w)
+
+        await _cache_delta_window(
+            window=w,
+            prev_window=int(cur.prev_window),
+            anchor_window=cur.anchor_window,
+            delta_prefix=cur.remote_prefix(),
+            credentials=credentials,
+            checkpoint_cache_root=checkpoint_cache_root,
+        )
+
+        # Stop if this delta is directly anchored.
+        if cur.anchor_window is not None and int(cur.prev_window) == int(cur.anchor_window):
+            break
+
+        # Continue walking back.
+        cur = await mgr._fetch_metadata(int(cur.prev_window))  # noqa: SLF001
+
+
 async def main() -> None:
     redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     r = aioredis.from_url(redis_url, decode_responses=True)
@@ -206,18 +256,9 @@ async def main() -> None:
             # Workers will apply deltas in-place to their already-loaded models.
             metadata = await mgr._fetch_metadata(ckpt_window)  # noqa: SLF001 (intentional for internal reuse)
             if metadata is not None and metadata.is_delta() and metadata.prev_window is not None:
-                prev = int(metadata.prev_window)
-
-                # Ensure previous checkpoint exists locally so workers can load it on restart.
-                prev_dir = checkpoint_cache_root / f"checkpoint-{prev}"
-                if not prev_dir.exists():
-                    await mgr.get_checkpoint(prev)
-
-                await _cache_delta_window(
-                    window=ckpt_window,
-                    prev_window=prev,
-                    anchor_window=metadata.anchor_window,
-                    delta_prefix=metadata.remote_prefix(),
+                await _ensure_delta_chain_cached(
+                    target_window=ckpt_window,
+                    mgr=mgr,
                     credentials=creds,
                     checkpoint_cache_root=checkpoint_cache_root,
                 )

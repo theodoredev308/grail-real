@@ -144,22 +144,50 @@ class WorkerState:
                         if meta_path.exists() and delta_meta_path.exists() and delta_sparse_path.exists():
                             meta = json.loads(meta_path.read_bytes())
                             prev_window = int(meta.get("prev_window"))
+                            anchor_window = meta.get("anchor_window")
+                            anchor_window_int = int(anchor_window) if anchor_window is not None else None
 
-                            # Ensure we have the base checkpoint loaded (usually already the prev window).
-                            if self.model is None or self.current_checkpoint_window != prev_window:
-                                base_dir = cache_root / f"checkpoint-{prev_window}"
+                            # Build delta chain from our current window (or anchor on cold start) → target.
+                            # We walk backwards from target until we reach the currently-loaded window.
+                            chain: list[int] = []
+                            cur = checkpoint_window
+                            while True:
+                                ddir = delta_root / f"delta-{cur}"
+                                mpath = ddir / "metadata.json"
+                                if not mpath.exists():
+                                    break
+                                m = json.loads(mpath.read_bytes())
+                                p = int(m.get("prev_window"))
+                                chain.append(cur)
+                                if self.current_checkpoint_window == p:
+                                    break
+                                cur = p
+                                # Safety bound: prevent infinite loops
+                                if len(chain) > 50:
+                                    break
+
+                            # If model isn't loaded, load anchor (best) or the earliest prev we found.
+                            if self.model is None or self.tokenizer is None or self.current_checkpoint_window is None:
+                                base_to_load: int | None = None
+                                if anchor_window_int is not None:
+                                    base_to_load = anchor_window_int
+                                elif chain:
+                                    # last element in chain is closest to base; its prev is our base
+                                    last = chain[-1]
+                                    last_meta = json.loads((delta_root / f"delta-{last}" / "metadata.json").read_bytes())
+                                    base_to_load = int(last_meta.get("prev_window"))
+                                if base_to_load is None:
+                                    raise RuntimeError("No base window available for delta apply")
+
+                                base_dir = cache_root / f"checkpoint-{base_to_load}"
                                 if not base_dir.exists():
-                                    # Fall back to waiting for full checkpoint if base isn't present yet.
                                     raise FileNotFoundError(str(base_dir))
 
-                                logger.info(
-                                    f"🔁 Loading base checkpoint for window {prev_window} from {base_dir}"
-                                )
+                                logger.info(f"🔁 Loading base checkpoint for window {base_to_load} from {base_dir}")
                                 self.model, self.tokenizer = clear_model_and_tokenizer(self.model, self.tokenizer)
                                 self.model = get_model(str(base_dir), device=None, eval_mode=True).to(self.device)
                                 self.tokenizer = get_tokenizer(str(base_dir))
 
-                                # Apply canonical chat template (same as slow path)
                                 try:
                                     canonical_template = build_qwen_chat_template(SYSTEM_PROMPT)
                                     if hasattr(self.tokenizer, "chat_template"):
@@ -169,7 +197,7 @@ class WorkerState:
                                 except Exception:
                                     pass
 
-                                self.current_checkpoint_window = prev_window
+                                self.current_checkpoint_window = base_to_load
                                 self.loop_batch_size = min(
                                     int(os.getenv("GRAIL_GENERATION_BATCH_SIZE", "16")),
                                     ROLLOUTS_PER_PROBLEM,
@@ -180,31 +208,38 @@ class WorkerState:
                             if self.model is None:
                                 raise RuntimeError("Model not loaded")
 
+                            # Apply forward (oldest first)
+                            chain.reverse()
                             t0 = time.time()
-                            sparse_tensors = load_file(str(delta_sparse_path))
+                            total_applied = 0
                             with torch.no_grad():
                                 sd = self.model.state_dict()
-                                applied = 0
-                                for name, tensor in sd.items():
-                                    ik = f"{name}.indices"
-                                    vk = f"{name}.values"
-                                    if ik not in sparse_tensors:
-                                        continue
-                                    idx = sparse_tensors[ik].to(device=tensor.device, dtype=torch.long)
-                                    vals = sparse_tensors[vk].to(device=tensor.device, dtype=tensor.dtype)
-                                    flat = tensor.view(-1)
-                                    flat.index_copy_(0, idx, vals)
-                                    applied += 1
-
-                            self.current_checkpoint_window = checkpoint_window
+                                for w in chain:
+                                    ddir = delta_root / f"delta-{w}"
+                                    sp = ddir / "delta_sparse.safetensors"
+                                    if not sp.exists():
+                                        raise FileNotFoundError(str(sp))
+                                    sparse_tensors = load_file(str(sp))
+                                    applied = 0
+                                    for name, tensor in sd.items():
+                                        ik = f"{name}.indices"
+                                        vk = f"{name}.values"
+                                        if ik not in sparse_tensors:
+                                            continue
+                                        idx = sparse_tensors[ik].to(device=tensor.device, dtype=torch.long)
+                                        vals = sparse_tensors[vk].to(device=tensor.device, dtype=tensor.dtype)
+                                        tensor.view(-1).index_copy_(0, idx, vals)
+                                        applied += 1
+                                    total_applied += applied
+                                    self.current_checkpoint_window = w
                             try:
                                 setattr(self.model, "grail_checkpoint_window", checkpoint_window)
                             except Exception:
                                 pass
 
                             logger.info(
-                                f"⚡ Applied delta {prev_window} → {checkpoint_window} "
-                                f"(touched={applied} tensors) in {time.time() - t0:.2f}s"
+                                f"⚡ Applied deltas to reach {checkpoint_window} "
+                                f"(steps={len(chain)} touched={total_applied} tensors) in {time.time() - t0:.2f}s"
                             )
                             return True
                     except Exception:
