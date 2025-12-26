@@ -190,7 +190,12 @@ class CheckpointManager:
         lock = self._download_locks.setdefault(window, asyncio.Lock())
 
         async with lock:
-            metadata = await self._fetch_metadata(window)
+            # For anchor windows, prefer FULL metadata to avoid recursive delta chain.
+            # This is critical for cold starts when downloading the base checkpoint.
+            from grail.shared.retention_utils import is_anchor_window
+            prefer_full = is_anchor_window(window)
+            
+            metadata = await self._fetch_metadata(window, prefer_full=prefer_full)
             if metadata is None:
                 logger.debug(
                     "No metadata.json for window %s — attempting best-effort download",
@@ -691,12 +696,31 @@ class CheckpointManager:
 
     # --------------------------- Internal helpers --------------------------- #
 
-    async def _fetch_metadata(self, window: int) -> CheckpointMetadata | None:
-        """Fetch checkpoint metadata, preferring DELTA when available.
+    async def _fetch_metadata(self, window: int, prefer_full: bool = False) -> CheckpointMetadata | None:
+        """Fetch checkpoint metadata.
 
-        This enables continuously running miners/validators to use the delta fast-path
-        even at anchor windows (where both FULL and DELTA may exist).
+        Args:
+            window: Window number to fetch metadata for
+            prefer_full: If True, prefer FULL checkpoint at anchor windows.
+                        If False (default), prefer DELTA for fast updates.
+
+        For continuously running miners/validators, prefer_full=False enables the
+        delta fast-path even at anchor windows (where both FULL and DELTA may exist).
+        
+        For cold starts or when downloading anchor checkpoints explicitly,
+        prefer_full=True avoids recursive delta chain reconstruction.
         """
+        from grail.shared.retention_utils import is_anchor_window
+        
+        # For anchor windows, optionally prefer FULL to avoid delta chain recursion
+        if prefer_full and is_anchor_window(window):
+            full_meta = await self._fetch_full_metadata(window)
+            if full_meta is not None:
+                return full_meta
+            # Fallback to DELTA if FULL not available
+            return await self._fetch_delta_metadata(window)
+        
+        # Default behavior: prefer DELTA for fast updates
         metadata = await self._fetch_delta_metadata(window)
         if metadata is not None:
             return metadata

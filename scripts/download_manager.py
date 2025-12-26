@@ -174,19 +174,32 @@ async def _ensure_delta_chain_cached(
     """Ensure we have enough local artifacts for workers to update without disk reconstruction.
 
     - Ensures anchor FULL checkpoint is present locally (for cold starts)
-    - Caches DELTA artifacts for the chain needed to reach target_window
+    - Caches DELTA artifacts ONLY from anchor -> target_window (not the full history)
+    
+    IMPORTANT: This function now only caches deltas from the immediate anchor to
+    the target window. Previously it would walk backwards through the entire history
+    (100+ deltas) because anchor windows have both FULL and DELTA checkpoints, and
+    _fetch_metadata prefers DELTA. Now we explicitly stop at the anchor window.
     """
+    from grail.shared.retention_utils import is_anchor_window
+    
     meta = await mgr._fetch_metadata(target_window)  # noqa: SLF001
     if meta is None or not meta.is_delta() or meta.prev_window is None:
         return
 
     anchor = meta.anchor_window
-    if anchor is not None:
-        anchor_dir = checkpoint_cache_root / f"checkpoint-{int(anchor)}"
-        if not anchor_dir.exists():
-            await mgr.get_checkpoint(int(anchor))
+    if anchor is None:
+        logging.warning("DELTA checkpoint %s has no anchor_window set; skipping delta cache", target_window)
+        return
+        
+    # Ensure anchor FULL checkpoint is present locally (for cold starts)
+    anchor_dir = checkpoint_cache_root / f"checkpoint-{int(anchor)}"
+    if not anchor_dir.exists():
+        logging.info("Downloading anchor FULL checkpoint %s for delta chain", anchor)
+        await mgr.get_checkpoint(int(anchor))
 
-    # Walk backwards caching deltas until we reach the anchor or a FULL checkpoint.
+    # Walk backwards caching deltas ONLY until we reach the anchor.
+    # We stop at the anchor window because that's where we have a FULL checkpoint.
     seen: set[int] = set()
     cur = meta
     while cur is not None and cur.is_delta() and cur.prev_window is not None:
@@ -194,6 +207,24 @@ async def _ensure_delta_chain_cached(
         if w in seen:
             break
         seen.add(w)
+        
+        # Stop if we've reached the anchor window (don't cache deltas beyond it)
+        if w == anchor:
+            logging.debug("Reached anchor window %s, stopping delta cache walk", anchor)
+            break
+            
+        # Also stop if prev_window IS the anchor (we're at the first delta after anchor)
+        if int(cur.prev_window) == anchor:
+            await _cache_delta_window(
+                window=w,
+                prev_window=int(cur.prev_window),
+                anchor_window=cur.anchor_window,
+                delta_prefix=cur.remote_prefix(),
+                credentials=credentials,
+                checkpoint_cache_root=checkpoint_cache_root,
+            )
+            logging.debug("Cached final delta %s -> anchor %s, stopping", w, anchor)
+            break
 
         await _cache_delta_window(
             window=w,
@@ -203,13 +234,17 @@ async def _ensure_delta_chain_cached(
             credentials=credentials,
             checkpoint_cache_root=checkpoint_cache_root,
         )
-
-        # Stop if this delta is directly anchored.
-        if cur.anchor_window is not None and int(cur.prev_window) == int(cur.anchor_window):
+        
+        # Stop if we hit an anchor window during the walk (shouldn't happen with
+        # proper anchor_window tracking, but safety check)
+        if is_anchor_window(int(cur.prev_window)):
+            logging.debug("Hit anchor window %s during walk, stopping", cur.prev_window)
             break
 
-        # Continue walking back.
+        # Continue walking back toward the anchor.
         cur = await mgr._fetch_metadata(int(cur.prev_window))  # noqa: SLF001
+    
+    logging.info("Delta chain cached: anchor=%s -> target=%s (%d deltas)", anchor, target_window, len(seen))
 
 
 async def main() -> None:
