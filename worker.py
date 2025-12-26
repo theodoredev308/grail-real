@@ -19,6 +19,7 @@ import bittensor as bt
 import orjson as json
 import redis.asyncio as aioredis
 import torch
+from safetensors.torch import load_file
 
 from grail.cli.mine import (
     MiningTimers,
@@ -101,20 +102,19 @@ class WorkerState:
             return True
 
         try:
-            # Workers WAIT for download_manager.py to download the checkpoint
-            # This is more efficient than each worker downloading independently
             cache_root = default_checkpoint_cache_root()
             checkpoint_dir = cache_root / f"checkpoint-{checkpoint_window}"
+            delta_root = cache_root.parent / "deltas"
+            delta_dir = delta_root / f"delta-{checkpoint_window}"
             
             # DEBUG: Log the exact path being checked
             logger.info(f"[DEBUG] cache_root={cache_root}, checkpoint_dir={checkpoint_dir}")
             logger.info(f"[DEBUG] checkpoint_dir type={type(checkpoint_dir)}, exists={checkpoint_dir.exists()}")
             
-            logger.info(
-                f"⏳ Waiting for download_manager to prepare checkpoint {checkpoint_window}..."
-            )
+            # Prefer applying locally cached DELTAs in-place (no per-worker downloads,
+            # no multi-GB checkpoint reconstruction on disk).
+            logger.info(f"⏳ Waiting for local delta/checkpoint for {checkpoint_window}...")
             
-            # Wait for checkpoint directory to exist with essential files
             max_wait_seconds = 370  # 6 minutes + 10 seconds
             check_interval = 2.0
             waited = 0.0
@@ -134,41 +134,96 @@ class WorkerState:
                                 return False
                     except Exception as e:
                         logger.warning(f"Error checking active window: {e}")
+
+                # DELTA path: wait for delta cache dir then apply in-place
+                if delta_dir.exists() and delta_dir.is_dir():
+                    try:
+                        meta_path = delta_dir / "metadata.json"
+                        delta_meta_path = delta_dir / "delta_metadata.json"
+                        delta_sparse_path = delta_dir / "delta_sparse.safetensors"
+                        if meta_path.exists() and delta_meta_path.exists() and delta_sparse_path.exists():
+                            meta = json.loads(meta_path.read_bytes())
+                            prev_window = int(meta.get("prev_window"))
+
+                            # Ensure we have the base checkpoint loaded (usually already the prev window).
+                            if self.model is None or self.current_checkpoint_window != prev_window:
+                                base_dir = cache_root / f"checkpoint-{prev_window}"
+                                if not base_dir.exists():
+                                    # Fall back to waiting for full checkpoint if base isn't present yet.
+                                    raise FileNotFoundError(str(base_dir))
+
+                                logger.info(
+                                    f"🔁 Loading base checkpoint for window {prev_window} from {base_dir}"
+                                )
+                                self.model, self.tokenizer = clear_model_and_tokenizer(self.model, self.tokenizer)
+                                self.model = get_model(str(base_dir), device=None, eval_mode=True).to(self.device)
+                                self.tokenizer = get_tokenizer(str(base_dir))
+
+                                # Apply canonical chat template (same as slow path)
+                                try:
+                                    canonical_template = build_qwen_chat_template(SYSTEM_PROMPT)
+                                    if hasattr(self.tokenizer, "chat_template"):
+                                        current_template = getattr(self.tokenizer, "chat_template", None)
+                                        if not current_template or current_template != canonical_template:
+                                            setattr(self.tokenizer, "chat_template", canonical_template)
+                                except Exception:
+                                    pass
+
+                                self.current_checkpoint_window = prev_window
+                                self.loop_batch_size = min(
+                                    int(os.getenv("GRAIL_GENERATION_BATCH_SIZE", "16")),
+                                    ROLLOUTS_PER_PROBLEM,
+                                )
+                                self.agent_loop = AgentEnvLoop(self.model, self.tokenizer, self.model.device)
+
+                            # Apply delta in-place on the model weights (GPU scatter updates).
+                            if self.model is None:
+                                raise RuntimeError("Model not loaded")
+
+                            t0 = time.time()
+                            sparse_tensors = load_file(str(delta_sparse_path))
+                            with torch.no_grad():
+                                sd = self.model.state_dict()
+                                applied = 0
+                                for name, tensor in sd.items():
+                                    ik = f"{name}.indices"
+                                    vk = f"{name}.values"
+                                    if ik not in sparse_tensors:
+                                        continue
+                                    idx = sparse_tensors[ik].to(device=tensor.device, dtype=torch.long)
+                                    vals = sparse_tensors[vk].to(device=tensor.device, dtype=tensor.dtype)
+                                    flat = tensor.view(-1)
+                                    flat.index_copy_(0, idx, vals)
+                                    applied += 1
+
+                            self.current_checkpoint_window = checkpoint_window
+                            try:
+                                setattr(self.model, "grail_checkpoint_window", checkpoint_window)
+                            except Exception:
+                                pass
+
+                            logger.info(
+                                f"⚡ Applied delta {prev_window} → {checkpoint_window} "
+                                f"(touched={applied} tensors) in {time.time() - t0:.2f}s"
+                            )
+                            return True
+                    except Exception:
+                        # If delta apply fails, fall through to slow path wait.
+                        pass
+
+                # Slow path (FULL checkpoint dir prepared by download_manager)
                 if checkpoint_dir.exists() and checkpoint_dir.is_dir():
-                    # Ensure checkpoint is complete, not partial download
                     partial_dir = cache_root / f"checkpoint-{checkpoint_window}.partial"
                     if partial_dir.exists():
-                        # Download manager is still working - wait
-                        if int(waited) % 30 == 0 and waited > 0:
-                            logger.info(f"⏳ Checkpoint {checkpoint_window} download in progress...")
                         await asyncio.sleep(check_interval)
                         waited += check_interval
                         continue
-                    
-                    # Check if essential files exist (download_manager may use .gz compression)
-                    config_file = checkpoint_dir / "config.json"
-                    index_file = checkpoint_dir / "model.safetensors.index.json"
+
                     monolithic_file = checkpoint_dir / "model.safetensors"
-                    
-                    # Also check for compressed versions
-                    config_exists = config_file.exists() or (checkpoint_dir / "config.json.gz").exists()
-                    index_exists = index_file.exists() or (checkpoint_dir / "model.safetensors.index.json.gz").exists()
-                    
-                    # Also verify safetensor shards exist (prevents loading incomplete checkpoints)
-                    shard_files = list(checkpoint_dir.glob("model-*.safetensors"))
-                    has_model_shards = len(shard_files) >= 1  # Accept any shard count >=1
-                    
-                    # Accept either a monolithic file OR (index + shards)
-                    checkpoint_ready = monolithic_file.exists() or (index_exists and has_model_shards)
-                    
-                    # If config is present, even better; but do not block readiness solely on config/index
-                    if checkpoint_ready or (config_exists and index_exists and has_model_shards):
-                        # Extra safety: wait 2 more seconds to ensure files are fully written
+                    if monolithic_file.exists():
                         await asyncio.sleep(2.0)
                         checkpoint_path = checkpoint_dir
-                        logger.info(
-                            f"✅ Checkpoint {checkpoint_window} ready after {waited:.1f}s"
-                        )
+                        logger.info(f"✅ Checkpoint {checkpoint_window} ready after {waited:.1f}s")
                         break
                 
                 # Log progress every 30 seconds

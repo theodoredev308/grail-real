@@ -57,7 +57,7 @@ nohup redis-server /root/grail/redis.conf > /root/grail/redis.out 2>&1 &
 redis-cli -p 41165 FLUSHALL
 
 
-
+export REDIS_URL=redis://154.54.100.79:41165
 
 export NETUID=81
 export USE_TRAINER_BUCKET=1

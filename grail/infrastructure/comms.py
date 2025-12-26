@@ -1233,7 +1233,23 @@ async def sink_window_inferences(
         "timestamp": time.time(),
     }
 
-    body = serialize_window_to_parquet(window_data)
+    # Parquet serialization is CPU-heavy and often explains the "gap" between the
+    # miner's "Uploading ..." log and the comms "Starting chunked upload ..." log.
+    # Optionally offload to a worker thread to avoid blocking the event loop.
+    t0 = time.time()
+    if os.getenv("GRAIL_PARQUET_TO_THREAD", "1").strip().lower() not in {"0", "false", "no", "off"}:
+        body = await asyncio.to_thread(serialize_window_to_parquet, window_data)
+    else:
+        body = serialize_window_to_parquet(window_data)
+    dt = time.time() - t0
+    if os.getenv("GRAIL_LOG_PARQUET_TIMINGS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        logger.info(
+            "🧱 Parquet ready for upload: window=%s inferences=%s size=%.1fMB serialize_time=%.2fs",
+            window_start,
+            len(inferences),
+            len(body) / (1024 * 1024),
+            dt,
+        )
     logger.debug(f"[SINK] window={window_start} count={len(inferences)} → key={key}")
 
     success = await upload_file_chunked(key, body, credentials=credentials, use_write=True)

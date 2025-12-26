@@ -4,14 +4,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
+from pathlib import Path
 from typing import Any
 
 import redis.asyncio as aioredis
+import zstandard as zstd
 
 from grail.infrastructure.checkpoint_consumer import (
     CheckpointManager,
     default_checkpoint_cache_root,
 )
+from grail.infrastructure.comms import download_file_chunked
 from grail.infrastructure.credentials import load_r2_credentials
 from grail.infrastructure.chain import GrailChainManager
 from grail.infrastructure.network import create_subtensor
@@ -85,6 +89,79 @@ async def _resolve_checkpoint_credentials() -> Any:
         }
 
 
+def _delta_cache_root(checkpoint_cache_root: Path) -> Path:
+    # default_checkpoint_cache_root() => ~/.cache/grail/checkpoints
+    # we store deltas alongside it => ~/.cache/grail/deltas
+    return checkpoint_cache_root.parent / "deltas"
+
+
+async def _cache_delta_window(
+    *,
+    window: int,
+    prev_window: int,
+    anchor_window: int | None,
+    delta_prefix: str,
+    credentials: Any,
+    checkpoint_cache_root: Path,
+) -> Path | None:
+    """Download DELTA artifacts for `window` into a local delta cache directory.
+
+    This avoids reconstructing a full model.safetensors on disk. Workers will apply
+    the delta in-place to their already-loaded model.
+    """
+    delta_root = _delta_cache_root(checkpoint_cache_root)
+    delta_root.mkdir(parents=True, exist_ok=True)
+
+    final_dir = delta_root / f"delta-{window}"
+    tmp_dir = delta_root / f"delta-{window}.partial"
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # Write minimal metadata needed by workers.
+        meta = {
+            "window": window,
+            "checkpoint_type": "DELTA",
+            "prev_window": prev_window,
+            "anchor_window": anchor_window,
+        }
+        (tmp_dir / "metadata.json").write_text(
+            __import__("json").dumps(meta, indent=2), encoding="utf-8"
+        )
+
+        # Download delta files (small)
+        delta_meta_key = f"{delta_prefix}/delta_metadata.json"
+        delta_zst_key = f"{delta_prefix}/delta_sparse.safetensors.zst"
+
+        delta_meta = await download_file_chunked(
+            delta_meta_key, credentials=credentials, use_write=False
+        )
+        if delta_meta is None:
+            raise RuntimeError(f"Missing {delta_meta_key}")
+        (tmp_dir / "delta_metadata.json").write_bytes(delta_meta)
+
+        delta_zst = await download_file_chunked(
+            delta_zst_key, credentials=credentials, use_write=False
+        )
+        if delta_zst is None:
+            raise RuntimeError(f"Missing {delta_zst_key}")
+        (tmp_dir / "delta_sparse.safetensors.zst").write_bytes(delta_zst)
+
+        # Decompress once per node so workers can load safetensors directly.
+        decompressor = zstd.ZstdDecompressor()
+        decompressed = decompressor.decompress(delta_zst)
+        (tmp_dir / "delta_sparse.safetensors").write_bytes(decompressed)
+
+        if final_dir.exists():
+            shutil.rmtree(final_dir, ignore_errors=True)
+        shutil.move(str(tmp_dir), str(final_dir))
+        return final_dir
+    except Exception:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+
+
 async def main() -> None:
     redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     r = aioredis.from_url(redis_url, decode_responses=True)
@@ -96,6 +173,7 @@ async def main() -> None:
         credentials=creds,
         keep_limit=keep_limit,
     )
+    checkpoint_cache_root = default_checkpoint_cache_root()
 
     last_ckpt_window: int | None = None
     logging.info("Starting download manager (redis=%s, keep=%d)", redis_url, keep_limit)
@@ -124,112 +202,40 @@ async def main() -> None:
                 await clear_client_cache()
             except Exception:
                 pass
-            # Fast path: try READY-based check immediately so we hit remote quickly
-            path = await mgr.get_checkpoint(ckpt_window)
-            if path is not None:
+            # Prefer DELTA caching (fast) and avoid full checkpoint reconstruction.
+            # Workers will apply deltas in-place to their already-loaded models.
+            metadata = await mgr._fetch_metadata(ckpt_window)  # noqa: SLF001 (intentional for internal reuse)
+            if metadata is not None and metadata.is_delta() and metadata.prev_window is not None:
+                prev = int(metadata.prev_window)
+
+                # Ensure previous checkpoint exists locally so workers can load it on restart.
+                prev_dir = checkpoint_cache_root / f"checkpoint-{prev}"
+                if not prev_dir.exists():
+                    await mgr.get_checkpoint(prev)
+
+                await _cache_delta_window(
+                    window=ckpt_window,
+                    prev_window=prev,
+                    anchor_window=metadata.anchor_window,
+                    delta_prefix=metadata.remote_prefix(),
+                    credentials=creds,
+                    checkpoint_cache_root=checkpoint_cache_root,
+                )
                 try:
                     await mgr.cleanup_local(window_start)
                 except Exception:
                     pass
                 last_ckpt_window = ckpt_window
-                logging.info("Checkpoint ready at %s", path)
+                logging.info("Delta ready at %s", _delta_cache_root(checkpoint_cache_root) / f"delta-{ckpt_window}")
                 await asyncio.sleep(1.0)
                 continue
 
-            # Preflight (bounded): probe manifest/shards briefly, then fall back to READY
-            try:
-                from grail.infrastructure.comms import get_file, get_file_size
-
-                def _index_key() -> str:
-                    return f"grail/checkpoints/checkpoint-{ckpt_window}/model.safetensors.index.json"
-
-                async def _collect_required_files() -> set[str]:
-                    # Prefer index.json (gz fallback handled by get_file())
-                    idx = await get_file(_index_key(), credentials=creds, use_write=False)
-                    required: set[str] = set()
-                    if isinstance(idx, dict):
-                        weight_map = idx.get("weight_map") or {}
-                        if isinstance(weight_map, dict):
-                            for fname in weight_map.values():
-                                if isinstance(fname, str) and fname:
-                                    required.add(fname)
-                    return required
-
-                async def _all_sizes_positive(files: set[str]) -> bool:
-                    if not files:
-                        return False
-                    for fname in files:
-                        size = await get_file_size(
-                            f"grail/checkpoints/checkpoint-{ckpt_window}/{fname}",
-                            credentials=creds,
-                            use_write=False,
-                        )
-                        if size is None or int(size) <= 0:
-                            return False
-                    return True
-
-                # Bound preflight duration by env (default 30s). Set 0 to skip preflight.
-                preflight_max_s = max(0, int(os.getenv("GRAIL_CKPT_PREFLIGHT_MAX_S", "30")))
-                attempts = max(0, preflight_max_s // 3)
-
-                shards: set[str] = set()
-                if attempts == 0:
-                    logging.info(
-                        "Skipping preflight (GRAIL_CKPT_PREFLIGHT_MAX_S=%s); falling back to READY check for ckpt_window=%s",
-                        preflight_max_s,
-                        ckpt_window,
-                    )
-                else:
-                    # Wait for index.json to appear and list all shards
-                    for i in range(attempts):
-                        shards = await _collect_required_files()
-                        if shards:
-                            break
-                        if i % 3 == 0:
-                            logging.info("Waiting for shard index for ckpt_window=%s...", ckpt_window)
-                        # Abort early if active window advanced
-                        aw = await _get_active_window(r)
-                        if aw is not None and int(aw) != int(window_start):
-                            logging.info(
-                                "Active window advanced to %s; stopping preflight for ckpt_window=%s",
-                                aw,
-                                ckpt_window,
-                            )
-                            shards = set()
-                            break
-                        await asyncio.sleep(3.0)
-                    if not shards:
-                        logging.warning("Shard index not yet available for ckpt_window=%s", ckpt_window)
-                        logging.info(
-                            "Bypassing preflight; falling back to READY check for ckpt_window=%s",
-                            ckpt_window,
-                        )
-
-                # Require shard sizes to be positive for two consecutive checks
-                stable = False
-                if shards:
-                    for _ in range(max(1, attempts)):
-                        ok1 = await _all_sizes_positive(shards)
-                        if not ok1:
-                            await asyncio.sleep(3.0)
-                            continue
-                        await asyncio.sleep(3.0)
-                        ok2 = await _all_sizes_positive(shards)
-                        if ok2:
-                            stable = True
-                            break
-                    if not stable:
-                        logging.warning("Shard files not yet fully published for ckpt_window=%s", ckpt_window)
-                        logging.info(
-                            "Bypassing preflight; falling back to READY check for ckpt_window=%s",
-                            ckpt_window,
-                        )
-            except Exception:
-                # If preflight fails, fall through to get_checkpoint which also verifies integrity
-                pass
+            # FULL (or unknown): fall back to the original behavior.
             path = await mgr.get_checkpoint(ckpt_window)
             if path is None:
-                logging.warning("READY not found yet for ckpt_window=%s; will retry automatically", ckpt_window)
+                logging.warning(
+                    "Checkpoint not ready yet for ckpt_window=%s; will retry automatically", ckpt_window
+                )
                 await asyncio.sleep(3.0)
                 continue
 
