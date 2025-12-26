@@ -15,6 +15,8 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+import orjson
+
 logger = logging.getLogger(__name__)
 
 # Minimum valid Parquet file size (magic bytes + minimal footer)
@@ -145,16 +147,16 @@ def _convert_inference_to_row(inference: dict[str, Any]) -> dict[str, Any]:
         "checkpoint_window": int(inference.get("checkpoint_window", 0)),
         "commit": {
             "tokens": [int(t) for t in tokens],
-            "commitments": json.dumps(commit.get("commitments", [])),
+            "commitments": orjson.dumps(commit.get("commitments", [])).decode(),
             "proof_version": str(commit.get("proof_version", "")),
             "model": {
                 "name": str(model_data.get("name", "")),
                 "layer_index": int(model_data.get("layer_index", 0)),
             },
             "signature": str(commit.get("signature", "")),
-            "beacon": json.dumps(commit.get("beacon", {})),
+            "beacon": orjson.dumps(commit.get("beacon", {})).decode(),
             "rollout": {
-                "trajectory": json.dumps(rollout_data.get("trajectory", [])),
+                "trajectory": orjson.dumps(rollout_data.get("trajectory", [])).decode(),
                 "total_reward": float(rollout_data.get("total_reward", 0.0)),
                 "advantage": float(rollout_data.get("advantage", 0.0)),
                 "success": bool(rollout_data.get("success", False)),
