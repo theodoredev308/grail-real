@@ -1,0 +1,12 @@
+[Unit]
+Description=Auto-pull grail repository timer
+Requires=.git-auto-pull.service
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=.git-auto-pull.service
+
+[Install]
+WantedBy=timers.target
+

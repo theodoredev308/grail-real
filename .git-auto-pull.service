@@ -1,0 +1,10 @@
+[Unit]
+Description=Auto-pull grail repository
+After=network.target
+
+[Service]
+Type=oneshot
+User=administrator
+WorkingDirectory=/home/administrator/ajo_work/mining/grail/grail
+ExecStart=/home/administrator/ajo_work/mining/grail/grail/.git-auto-pull.sh
+
